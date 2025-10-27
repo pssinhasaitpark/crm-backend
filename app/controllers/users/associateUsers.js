@@ -1,4 +1,7 @@
 //app/controllers/associateUsers.js
+import { nanoid } from "nanoid";
+import AssociateLink from "../../models/associateLink.js";
+import User from "../../models/users/user.js";
 import bcrypt from "bcryptjs";
 import AssociateUser from "../../models/users/associateUsers.js";
 import { handleResponse } from "../../utils/helper.js";
@@ -227,8 +230,67 @@ const getAllAssociatedUserss = async (req, res) => {
   }
 };
 
+const generateAssociateLink = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user || !user.id) return handleResponse(res, 403, "Unauthorized");
+
+    if (!["channel_partner", "agent"].includes(user.role))
+      return handleResponse(res, 403, "Only CP or Agent can generate associate links");
+
+    const code = nanoid(10);
+    await AssociateLink.create({ code, created_by: user.id });
+
+    const registrationLink = `${process.env.FRONTEND_URL}/associate-user/register/${code}`;
+    return handleResponse(res, 200, "Associate link generated successfully", { link: registrationLink });
+  } catch (error) {
+    console.error("Error generating associate link:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+const createFromAssociateLink = async (req, res) => {
+  try {
+    const { code } = req.params;
+    const link = await AssociateLink.findOne({ code });
+    if (!link) return handleResponse(res, 400, "Invalid or expired registration link");
+
+    const creator = await User.findById(link.created_by);
+    if (!creator) return handleResponse(res, 404, "Creator not found");
+
+    const { full_name, email, phone_number, location, password } = req.body;
+    if (!full_name || !email || !phone_number || !password)
+      return handleResponse(res, 400, "Missing required fields");
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newAssociate = await AssociateUser.create({
+      full_name,
+      email,
+      phone_number,
+      location,
+      company: creator.company,
+      company_name: creator.company_name,
+      role: creator.role, // same as creator type (agent or CP)
+      password: hashedPassword,
+      createdBy: {
+        id: creator._id,
+        name: creator.full_name,
+      },
+    });
+
+    await AssociateLink.deleteOne({ code });
+    return handleResponse(res, 201, "Associate created successfully", newAssociate.toObject());
+  } catch (error) {
+    console.error("Error creating associate:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
 export const associateUsers = {
   createAssociateUser,
   loginAssociateUser,
-  getAllAssociatedUsers
+  getAllAssociatedUsers,
+  generateAssociateLink,
+  createFromAssociateLink
 };

@@ -1,3 +1,4 @@
+//app/models/users/associateUsers.js
 import mongoose from "mongoose";
 
 const associateUserSchema = new mongoose.Schema(

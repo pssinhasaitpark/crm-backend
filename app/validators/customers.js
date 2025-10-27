@@ -26,4 +26,6 @@ export const customerValidators = Joi.object({
             "string.pattern.base": "Please enter a valid phone number and must be exactly 10 digits long",
             "any.required": "Personal phone number is required",
         }),
+    company: Joi.string().hex().length(24).optional(),
+
 }); 
