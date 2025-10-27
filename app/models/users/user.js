@@ -20,10 +20,6 @@ const userSchema = new mongoose.Schema(
             enum: ["active", "inactive"],
             default: "active",
         },
-        createdBy: {
-            id: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-            name: { type: String, default: null },
-        },
     },
     { timestamps: true }
 );

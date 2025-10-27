@@ -10,4 +10,8 @@ router.post("/login", associateUsers.loginAssociateUser);
 
 router.get("/all", verifyToken, associateUsers.getAllAssociatedUsers);
 
+router.get("/generate-associate-link", verifyToken, associateUsers. generateAssociateLink);
+
+router.post("/register/associate/:code", associateUsers.createFromAssociateLink);
+
 export default router;

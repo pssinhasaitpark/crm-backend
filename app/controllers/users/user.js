@@ -1,6 +1,8 @@
+//app/controllers/users/user.js
 import bcrypt from "bcryptjs";
 import User from "../../models/users/user.js";
 import Company from "../../models/company.js";
+import Customer from "../../models/customers.js";
 import { handleResponse } from "../../utils/helper.js";
 import { createUserValidator, loginValidator, createAssociateValidator } from "../../validators/users/user.js";
 import { signAccessToken } from "../../middlewares/jwtAuth.js";
@@ -99,10 +101,74 @@ const loginUser = async (req, res) => {
   } catch (error) {
     console.error("Login error:", error);
     return handleResponse(res, 500, "Internal Server Error");
+  }        
+};
+
+const me = async (req, res) => {
+  try {
+
+    const user = await User.findById(req.user.id).select("-password -__v -createdBy");
+
+    if (!user) {
+      return handleResponse(res, 404, "User not found.");
+    }
+
+    return handleResponse(res, 200, "User details fetched successfully", user.toObject());
+  } catch (error) {
+    console.error("Error fetching user details:", error);
+    return handleResponse(res, 500, "Internal Server Error");
   }
 };
 
-export const user = {
+const meh = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password -__v -createdBy");
+    if (!user) {
+      return handleResponse(res, 404, "User not found.");
+    }
+
+    let responseData = user.toObject();
+
+    // Add customer/lead stats based on role
+    if (user.role === "channel_partner") {
+      // For CP: Count all customers created by them
+      const totalCustomers = await Customer.countDocuments({ "createdBy.id": user._id });
+      const statusCounts = await Customer.aggregate([
+        { $match: { "createdBy.id": user._id } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]);
+      responseData.customers = {
+        total: totalCustomers,
+        statusCounts: statusCounts.reduce((acc, curr) => {
+          acc[curr._id] = curr.count;
+          return acc;
+        }, {}),
+      };
+    } else if (user.role === "agent") {
+      // For Agent: Count all leads assigned to their company
+      const totalLeads = await Customer.countDocuments({ company: user.company });
+      const statusCounts = await Customer.aggregate([
+        { $match: { company: user.company } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]);
+      responseData.leads = {
+        total: totalLeads,
+        statusCounts: statusCounts.reduce((acc, curr) => {
+          acc[curr._id] = curr.count;
+          return acc;
+        }, {}),
+      };
+    }
+
+    return handleResponse(res, 200, "User details fetched successfully", responseData);
+  } catch (error) {
+    console.error("Error fetching user details:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+export const user = {       
   registerUser,
   loginUser,
+  me,
 };

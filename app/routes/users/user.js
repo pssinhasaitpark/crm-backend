@@ -8,4 +8,7 @@ router.post("/register", user.registerUser);
 
 router.post("/login", user.loginUser);
 
+router.get("/me", verifyToken,user.me);
+
 export default router;
+ 
