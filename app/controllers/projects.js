@@ -51,10 +51,10 @@ const createProjects = async (req, res) => {
 
 const getAllProjects = async (req, res) => {
   try {
-    const allowedRoles = ["admin", "channel_partner", "agent"];
-    if (!req.user || !allowedRoles.includes(req.user.role)) {
-      return handleResponse(res, 403, "Access denied. Admins, agents, and channel partners only.");
-    }
+    // const allowedRoles = ["admin", "channel_partner", "agent"];
+    // if (!req.user || !allowedRoles.includes(req.user.role)) {
+    //   return handleResponse(res, 403, "Access denied. Admins, agents, and channel partners only.");
+    // }
 
     const { q = "", page = 1, perPage = 100 } = req.query;
 

@@ -5,6 +5,9 @@ import { verifyToken } from "../middlewares/jwtAuth.js"
 
 const router = express.Router();
 
+router.get("/history/:id", verifyToken, customers.getCustomerStatusHistory);
+
+router.get("/broadcasted", verifyToken, customers.getAllBroadcastedCustomers);
 
 router.get("/generate-customer-link", verifyToken, customers.generateCustomerLink);
 
@@ -13,10 +16,15 @@ router.post("/create", verifyToken, customers.createCustomer);
 router.get("/all", verifyToken, customers.getAllCustomers);
 
 router.get("/stats", verifyToken, customers.getCustomerStats);
-
+    
 router.get("/:id", verifyToken, customers.getCustomersById);
 
-router.post("/register/customer/:code", customers.createCustomerFromLink);
+router.post("/register/:code", customers.createCustomerFromLink);
 
+router.post("/accept/:customerId", verifyToken, customers.acceptCustomer);
+
+router.post("/decline/:customerId", verifyToken, customers.declineCustomer);
+
+router.patch("/status/:id", verifyToken, customers.updateCustomerStatus);
 
 export default router;

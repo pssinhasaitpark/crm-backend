@@ -9,6 +9,6 @@ const router = express.Router();
 // Only admins can add projects
 router.post("/admin/create", verifyToken, upload, projects.createProjects);
 
-router.get("/", verifyToken, projects.getAllProjects);
+router.get("/", projects.getAllProjects);
 
 export default router;

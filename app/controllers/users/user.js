@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import User from "../../models/users/user.js";
 import Company from "../../models/company.js";
 import Customer from "../../models/customers.js";
+import AssociateUser from "../../models/users/associateUsers.js";
 import { handleResponse } from "../../utils/helper.js";
 import { createUserValidator, loginValidator, createAssociateValidator } from "../../validators/users/user.js";
 import { signAccessToken } from "../../middlewares/jwtAuth.js";
@@ -73,96 +74,96 @@ const loginUser = async (req, res) => {
 
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email }).select("+password");
+    console.log(`🔐 Login attempt for: ${email}`);
+
+    // Step 1️⃣ — Check if user exists in main User collection
+    let user = await User.findOne({ email }).select("+password");
+
+    // Step 2️⃣ — If not found, check in AssociateUser collection
+    let isAssociate = false;
+    if (!user) {
+      user = await AssociateUser.findOne({ email }).select("+password");
+      if (user) isAssociate = true;
+    }
+
+    // Step 3️⃣ — Not found anywhere
     if (!user) {
       return handleResponse(res, 404, "User not found with this email");
     }
 
+    // Step 4️⃣ — Validate status
     if (user.status !== "active") {
       return handleResponse(res, 403, "Your account is inactive. Please contact admin.");
     }
 
+    // Step 5️⃣ — Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return handleResponse(res, 401, "Invalid credentials");
     }
 
-    const token = signAccessToken(user._id, user.role, user.email);
+    // Step 6️⃣ — Build JWT payload
+    const tokenPayload = {
+      id: user._id,
+      role: user.role,
+      email: user.email,
+      company: user.company,
+      company_name: user.company_name,
+      isAssociate,
+    };
 
+    // Step 7️⃣ — Generate token
+    const token = signAccessToken(
+      user._id,
+      user.role,
+      user.email,
+      { company: user.company, company_name: user.company_name, isAssociate }
+    );
+
+    // Step 8️⃣ — Prepare clean response
     const responseData = {
       id: user._id,
-      // full_name: user.full_name,
-      // email: user.email,
+      full_name: user.full_name,
+      email: user.email,
       role: user.role,
+      company: user.company_name,
+      isAssociate,
       token,
     };
 
+    console.log(`✅ Login successful for ${isAssociate ? "Associate" : "Main"} user: ${user.full_name}`);
+
     return handleResponse(res, 200, "Login successful", responseData);
   } catch (error) {
-    console.error("Login error:", error);
-    return handleResponse(res, 500, "Internal Server Error");
-  }        
-};
-
-const me = async (req, res) => {
-  try {
-
-    const user = await User.findById(req.user.id).select("-password -__v -createdBy");
-
-    if (!user) {
-      return handleResponse(res, 404, "User not found.");
-    }
-
-    return handleResponse(res, 200, "User details fetched successfully", user.toObject());
-  } catch (error) {
-    console.error("Error fetching user details:", error);
+    console.error("❌ Login error:", error);
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
 
-const meh = async (req, res) => {
+const me = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("-password -__v -createdBy");
+    let user;
+
+    // 🔍 First try to find in main users
+    user = await User.findById(req.user.id).select("-password -__v -createdBy");
+
+    // 🔍 If not found, try associate users
+    if (!user) {
+      user = await AssociateUser.findById(req.user.id).select("-password -__v -createdBy");
+    }
+
     if (!user) {
       return handleResponse(res, 404, "User not found.");
     }
 
-    let responseData = user.toObject();
-
-    // Add customer/lead stats based on role
-    if (user.role === "channel_partner") {
-      // For CP: Count all customers created by them
-      const totalCustomers = await Customer.countDocuments({ "createdBy.id": user._id });
-      const statusCounts = await Customer.aggregate([
-        { $match: { "createdBy.id": user._id } },
-        { $group: { _id: "$status", count: { $sum: 1 } } },
-      ]);
-      responseData.customers = {
-        total: totalCustomers,
-        statusCounts: statusCounts.reduce((acc, curr) => {
-          acc[curr._id] = curr.count;
-          return acc;
-        }, {}),
-      };
-    } else if (user.role === "agent") {
-      // For Agent: Count all leads assigned to their company
-      const totalLeads = await Customer.countDocuments({ company: user.company });
-      const statusCounts = await Customer.aggregate([
-        { $match: { company: user.company } },
-        { $group: { _id: "$status", count: { $sum: 1 } } },
-      ]);
-      responseData.leads = {
-        total: totalLeads,
-        statusCounts: statusCounts.reduce((acc, curr) => {
-          acc[curr._id] = curr.count;
-          return acc;
-        }, {}),
-      };
-    }
-
-    return handleResponse(res, 200, "User details fetched successfully", responseData);
+    return handleResponse(
+      res,
+      200,
+      "User details fetched successfully",
+      user.toObject()
+    );
   } catch (error) {
-    console.error("Error fetching user details:", error);
+    console.error("❌ Error fetching user details:", error);
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
