@@ -85,6 +85,7 @@ const getCompanyById = async (req, res) => {
   }
 };
 
+
 export const company = {
   createCompany,
   getAllCompanies,
