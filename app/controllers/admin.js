@@ -71,6 +71,7 @@ const loginAdmin = async (req, res) => {
   }
 };
 
+
 export const admin = {
     registerAdmin,
     loginAdmin
