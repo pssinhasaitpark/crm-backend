@@ -1,9 +1,10 @@
 //app/controllers/associateUsers.js
 import { nanoid } from "nanoid";
-import AssociateLink from "../../models/associateLink.js";
 import User from "../../models/users/user.js";
-import bcrypt from "bcryptjs";
+import AssociateLink from "../../models/associateLink.js";
+import Customer from "../../models/customers.js";
 import AssociateUser from "../../models/users/associateUsers.js";
+import bcrypt from "bcryptjs";
 import { handleResponse } from "../../utils/helper.js";
 import { createAssociateValidator } from "../../validators/users/associateUsers.js";
 import jwt from "jsonwebtoken";
@@ -108,7 +109,7 @@ const loginAssociateUser = async (req, res) => {
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
-
+/*
 const getAllAssociatedUsers = async (req, res) => {
   try {
     const user = req.user;
@@ -162,68 +163,59 @@ const getAllAssociatedUsers = async (req, res) => {
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
+*/
 
-const getAllAssociatedUserss = async (req, res) => {
+const getAllAssociatedUsers = async (req, res) => {
   try {
     const user = req.user;
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10, includeCustomers = false } = req.query;
     const skip = (page - 1) * limit;
 
-    let matchStage = {};
+    let query = {};
+    if (user.role === "admin") query = {};
+    else query = { "createdBy.id": user.id };
 
-    if (user.role !== "admin") {
-      matchStage = { "createdBy.id": new mongoose.Types.ObjectId(String(user.id)) };
+    const projection = { password: 0, __v: 0, updatedAt: 0 };
+
+    const totalAssociates = await AssociateUser.countDocuments(query);
+    let associates = await AssociateUser.find(query, projection)
+      .sort({ createdAt: -1 })
+      .skip(Number(skip))
+      .limit(Number(limit))
+      .lean();
+
+    if (!associates.length) {
+      let msg = "There are no associated users found.";
+      if (user.role === "agent") msg = "You don’t have any associated Agents yet.";
+      if (user.role === "channel_partner") msg = "You don’t have any associated Channel Partners yet.";
+      return handleResponse(res, 200, msg);
     }
 
-    const projection = {
-      password: 0,
-      __v: 0,
-      updatedAt: 0,
-    };
+    // 🧠 For each associate, get their customer count (+ details if requested)
+    const associatesWithCustomers = await Promise.all(
+      associates.map(async (associate) => {
+        const customerQuery = { "createdBy.id": associate._id };
 
-    const pipeline = [
-      { $match: matchStage },
-      { $project: projection },
-      { $sort: { createdAt: -1 } },
-      {
-        $facet: {
-          results: [
-            { $skip: Number(skip) },
-            { $limit: Number(limit) },
-          ],
-          totalCount: [{ $count: "count" }],
-        },
-      },
-    ];
+        const customers = await Customer.find(customerQuery)
+          .select("full_name phone_number email status project createdAt")
+          .sort({ createdAt: -1 })
+          .lean();
 
-    const data = await AssociateUser.aggregate(pipeline);
-
-    const associates = data[0]?.results || [];
-    const totalAssociates = data[0]?.totalCount[0]?.count || 0;
-
-    let formattedAssociates = associates;
-    if (user.role !== "admin") {
-      formattedAssociates = associates.map((item) => {
-        const obj = { ...item };
-        delete obj.createdBy;
-        return obj;
-      });
-    }
-
-    if (formattedAssociates.length === 0) {
-      let noDataMessage = "There are no associated users found.";
-      if (user.role === "agent") noDataMessage = "You don’t have any associated Agents yet.";
-      if (user.role === "channel_partner") noDataMessage = "You don’t have any associated Channel Partners yet.";
-
-      return handleResponse(res, 200, noDataMessage);
-    }
+        return {
+          ...associate,
+          total_customers: customers.length,
+          customers: includeCustomers === "true" ? customers : undefined, // only include if ?includeCustomers=true
+        };
+      })
+    );
 
     return handleResponse(res, 200, "Associates fetched successfully", {
-      results: formattedAssociates,
+      results: associatesWithCustomers,
       totalItems: totalAssociates,
       currentPage: Number(page),
       totalPages: Math.ceil(totalAssociates / limit),
     });
+
   } catch (error) {
     console.error("Error fetching associates:", error);
     return handleResponse(res, 500, "Internal Server Error");

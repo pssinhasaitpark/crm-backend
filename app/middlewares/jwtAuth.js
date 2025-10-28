@@ -78,7 +78,7 @@ export const verifyAdmin = (req, res, next) => {
   }
   next();
 };
-
+/*
 export const verifyToken = async (req, res, next) => {
   try {
     const token = req.header("Authorization")?.replace("Bearer ", "");
@@ -100,6 +100,56 @@ export const verifyToken = async (req, res, next) => {
       role: decoded.role,
       name: user.name || user.full_name,
       email: user.email,
+    };
+
+    next();
+  } catch (error) {
+    console.error("Token verification error:", error);
+    if (error instanceof jwt.JsonWebTokenError)
+      return handleResponse(res, 403, "Invalid token.");
+    if (error instanceof jwt.TokenExpiredError)
+      return handleResponse(res, 403, "Token expired.");
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+*/
+
+import AssociateUser from "../models/users/associateUsers.js";
+
+export const verifyToken = async (req, res, next) => {
+  try {
+    const token = req.header("Authorization")?.replace("Bearer ", "");
+    if (!token) return handleResponse(res, 403, "Access Denied. No token provided.");
+
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+
+    let user;
+
+    // ✅ Check for user based on role
+    if (decoded.role === "admin") {
+      user = await Admin.findById(decoded.user_id || decoded.id);
+    } else if (["agent", "channel_partner"].includes(decoded.role)) {
+      // Try to find in main User collection first
+      user = await User.findById(decoded.user_id || decoded.id);
+
+      // If not found, check AssociateUser collection
+      if (!user) {
+        user = await AssociateUser.findById(decoded.user_id || decoded.id);
+      }
+    }
+
+    if (!user) {
+      return handleResponse(res, 403, "User not found or unauthorized.");
+    }
+
+    // ✅ Attach minimal user info to request
+    req.user = {
+      id: user._id.toString(),
+      role: decoded.role,
+      name: user.full_name || user.name,
+      email: user.email,
+      company: user.company,
+      company_name: user.company_name,
     };
 
     next();
