@@ -1,5 +1,43 @@
 //app/validators/customers.js
 import Joi from "joi";
+import dayjs from "dayjs";
+
+export const followUpValidators = Joi.object({
+  task: Joi.string().required().messages({
+    "any.required": "Task is required",
+    "string.empty": "Task cannot be empty",
+  }),
+
+  notes: Joi.string().allow("").optional(),
+
+  follow_up_date: Joi.string()
+    .required()
+    .custom((value, helpers) => {
+      // ✅ Check format strictly
+      const date = dayjs(value, "DD/MM/YYYY", true);
+      if (!date.isValid()) {
+        return helpers.message("Follow Up Date must be in DD/MM/YYYY format");
+      }
+
+      // ✅ Prevent past dates
+      const today = dayjs().startOf("day");
+      if (date.isBefore(today)) {
+        return helpers.message("Follow Up Date cannot be in the past");
+      }
+
+      return value; // pass validation
+    })
+    .messages({
+      "any.required": "follow_up_date is required",
+      "string.empty": "follow_up_date cannot be empty",
+    }),
+});
+
+export const notesValidators = Joi.object({
+  message: Joi.string().required().messages({
+    "string.empty": "Note message is required",
+  }),
+});
 
 export const customerValidators = Joi.object({
     full_name: Joi.string().required().messages({

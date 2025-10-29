@@ -7,8 +7,15 @@ import Customers from "../models/customers.js";
 import Project from "../models/projects.js";
 import mongoose from "mongoose";
 import { handleResponse } from "../utils/helper.js";
-import { customerValidators } from "../validators/customers.js";
+import { customerValidators, followUpValidators, notesValidators } from "../validators/customers.js";
 import MasterStatus from "../models/masterStatus.js";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import customParseFormat from "dayjs/plugin/customParseFormat.js";
+import FollowUp from "../models/followUp.js";
+
+dayjs.extend(utc);
+dayjs.extend(customParseFormat);
 
 const createCustomer = async (req, res) => {
   try {
@@ -355,7 +362,7 @@ const getCustomerStats = async (req, res) => {
     if (!user) return handleResponse(res, 404, "User not found.");
 
     const { status } = req.query;
-    console.log(`📊 Fetching data for: ${user.full_name} (${user.role}), status: ${status || "ALL"}`);
+    console.log(`📊🔹 Fetching data for: ${user.full_name} (${user.role}), status: ${status || "ALL"}`);
 
     // === CASE 1: If ?status=XYZ → Return filtered customer list ===
     if (status) {
@@ -941,6 +948,152 @@ const getCustomerStatusHistory = async (req, res) => {
   }
 };
 
+const addFollowUp = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const user = req.user;
+
+    const { error } = followUpValidators.validate(req.body, { abortEarly: false });
+    if (error) return handleResponse(res, 400, error.details[0].message);
+
+    const { task, notes, follow_up_date } = req.body;
+
+    // ✅ Verify customer exists
+    const customer = await Customer.findById(customerId);
+    if (!customer) return handleResponse(res, 404, "Customer not found");
+
+    // ✅ Prepare follow-up data
+    const followUpData = {
+      task,
+      notes,
+      follow_up_date, // exact DD/MM/YYYY
+      added_by: {
+        id: user.id,
+        name: user.username,
+        role: user.user_role,
+      },
+      created_at: new Date(),
+    };
+
+    // ✅ Find or create FollowUp doc
+    let followUpDoc = await FollowUp.findOne({ customer: customerId });
+    if (!followUpDoc) {
+      followUpDoc = new FollowUp({
+        customer: customerId,
+        follow_ups: [followUpData],
+      });
+    } else {
+      followUpDoc.follow_ups.push(followUpData);
+    }
+
+    await followUpDoc.save();
+
+    return handleResponse(res, 201, "Follow-up added successfully", followUpData);
+  } catch (err) {
+    console.error("Error adding follow-up:", err);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+const getCustomerFollowUps = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+
+    const followUpDoc = await FollowUp.findOne({ customer: customerId })
+      .populate("customer", "full_name");
+
+    if (!followUpDoc)
+      return handleResponse(res, 404, "No follow-ups found for this customer");
+
+    const formatted = followUpDoc.follow_ups.map(f => ({
+      task: f.task,
+      notes: f.notes,
+      follow_up_date: f.follow_up_date, // already DD/MM/YYYY
+      added_by: f.added_by,
+      created_at: f.created_at,
+    }));
+
+    return handleResponse(res, 200, "Follow-ups fetched successfully", {
+      customer_name: followUpDoc.customer.full_name,
+      results: formatted,
+    });
+  } catch (error) {
+    console.error("Error fetching follow-ups:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+const addNotes = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const user = req.user;
+
+    const { error } = noteValidator.validate(req.body, { abortEarly: false });
+    if (error) return handleResponse(res, 400, error.details[0].message);
+
+    const { message } = req.body;
+
+    // ✅ Verify customer
+    const customer = await Customer.findById(customerId);
+    if (!customer) return handleResponse(res, 404, "Customer not found");
+
+    // ✅ Note data
+    const noteData = {
+      message,
+      added_by: {
+        id: user.id,
+        name: user.username,
+        role: user.user_role,
+      },
+      created_at: new Date(),
+    };
+
+    // ✅ Find or create Note doc for this customer
+    let noteDoc = await Note.findOne({ customer: customerId });
+    if (!noteDoc) {
+      noteDoc = new Note({
+        customer: customerId,
+        notes: [noteData],
+      });
+    } else {
+      noteDoc.notes.push(noteData);
+    }
+
+    await noteDoc.save();
+
+    return handleResponse(res, 201, "Note added successfully", noteData);
+  } catch (err) {
+    console.error("Error adding note:", err);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+const getCustomerNotes = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+
+    const noteDoc = await Note.findOne({ customer: customerId })
+      .populate("customer", "full_name");
+
+    if (!noteDoc)
+      return handleResponse(res, 404, "No notes found for this customer");
+
+    const formatted = noteDoc.notes.map(n => ({
+      message: n.message,
+      added_by: n.added_by,
+      created_at: n.created_at,
+    }));
+
+    return handleResponse(res, 200, "Notes fetched successfully", {
+      customer_name: noteDoc.customer.full_name,
+      results: formatted,
+    });
+  } catch (error) {
+    console.error("Error fetching notes:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
 export const customers = {
   createCustomer,
   getAllCustomers,
@@ -952,5 +1105,9 @@ export const customers = {
   declineCustomer,
   getAllBroadcastedCustomers,
   updateCustomerStatus,
-  getCustomerStatusHistory
+  getCustomerStatusHistory,
+  addFollowUp,
+  getCustomerFollowUps,
+  addNotes,
+  getCustomerNotes
 };

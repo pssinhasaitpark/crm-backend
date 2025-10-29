@@ -82,7 +82,7 @@ mediasetup(app);
 app.get("/", (req, res) => {
   res.status(200).send({
     error: false,
-    message: "Welcome to the CRM-CP-Agent Project....",
+    message: "Welcome to the CRM Project....",
   });
 });
 
