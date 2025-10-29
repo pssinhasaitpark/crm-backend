@@ -1,0 +1,29 @@
+//app/models/followUp.js
+import mongoose from "mongoose";
+
+const followUpItemSchema = new mongoose.Schema(
+  {
+    task: { type: String, required: true },
+    notes: { type: String },
+    follow_up_date: { type: String, required: true }, // store as string (DD/MM/YYYY)
+    added_by: {
+      id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      name: String,
+      role: String,
+    },
+    created_at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const followUpSchema = new mongoose.Schema({
+  customer: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Customer",
+    required: true,
+    unique: true, // one document per customer
+  },
+  follow_ups: [followUpItemSchema],
+});
+
+export default mongoose.model("FollowUp", followUpSchema);

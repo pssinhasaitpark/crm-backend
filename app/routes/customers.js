@@ -27,4 +27,12 @@ router.post("/decline/:customerId", verifyToken, customers.declineCustomer);
 
 router.patch("/status/:id", verifyToken, customers.updateCustomerStatus);
 
+router.post("/follow-up/:customerId", verifyToken, customers.addFollowUp);
+
+router.get("/follow-ups/:customerId", verifyToken, customers.getCustomerFollowUps);
+
+router.post("/:customerId/note", verifyToken, customers.addNotes);
+
+router.get("/:customerId/notes", verifyToken, customers.getCustomerNotes);
+
 export default router;
