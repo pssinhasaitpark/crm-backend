@@ -8,7 +8,6 @@ import bcrypt from "bcryptjs";
 import { handleResponse } from "../../utils/helper.js";
 import { createAssociateValidator } from "../../validators/users/associateUsers.js";
 import jwt from "jsonwebtoken";
-import mongoose from "mongoose";
 
 const createAssociateUser = async (req, res) => {
   try {
@@ -109,61 +108,6 @@ const loginAssociateUser = async (req, res) => {
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
-/*
-const getAllAssociatedUsers = async (req, res) => {
-  try {
-    const user = req.user;
-    const { page = 1, limit = 10 } = req.query;
-    const skip = (page - 1) * limit;
-
-    let query = {};
-
-    if (user.role === "admin") {
-      query = {};
-    } else {
-      query = { "createdBy.id": user.id };
-    }
-
-    const projection = { password: 0, __v: 0, updatedAt: 0, };
-
-    const totalAssociates = await AssociateUser.countDocuments(query);
-
-    let associates = await AssociateUser.find(query, projection)
-      .sort({ createdAt: -1 })
-      .skip(Number(skip))
-      .limit(Number(limit));
-
-    if (user.role !== "admin") {
-      associates = associates.map((a) => {
-        const obj = a.toObject();
-        delete obj.createdBy;
-        return obj;
-      });
-    }
-
-    if (associates.length === 0) {
-      let noDataMessage = "There are no associated users found.";
-      if (user.role === "agent")
-        noDataMessage = "You don’t have any associated Agents yet.";
-      if (user.role === "channel_partner")
-        noDataMessage = "You don’t have any associated Channel Partners yet.";
-
-      return handleResponse(res, 200, noDataMessage);
-    }
-
-    return handleResponse(res, 200, `Associates fetched successfully`, {
-      results: associates,
-      totalItems: totalAssociates,
-      currentPage: Number(page),
-      totalPages: Math.ceil(totalAssociates / limit),
-    });
-
-  } catch (error) {
-    console.error("Error fetching associates:", error);
-    return handleResponse(res, 500, "Internal Server Error");
-  }
-};
-*/
 
 const getAllAssociatedUsers = async (req, res) => {
   try {
@@ -171,9 +115,9 @@ const getAllAssociatedUsers = async (req, res) => {
     const { page = 1, limit = 10, includeCustomers = false } = req.query;
     const skip = (page - 1) * limit;
 
+    // 🧠 Build base query
     let query = {};
-    if (user.role === "admin") query = {};
-    else query = { "createdBy.id": user.id };
+    if (user.role !== "admin") query = { "createdBy.id": user.id };
 
     const projection = { password: 0, __v: 0, updatedAt: 0 };
 
@@ -191,24 +135,49 @@ const getAllAssociatedUsers = async (req, res) => {
       return handleResponse(res, 200, msg);
     }
 
-    // 🧠 For each associate, get their customer count (+ details if requested)
+    // 🧩 For each associate, attach customer list (with status history if includeCustomers=true)
     const associatesWithCustomers = await Promise.all(
       associates.map(async (associate) => {
         const customerQuery = { "createdBy.id": associate._id };
 
+        // Select base fields + status_history (included only when includeCustomers=true)
         const customers = await Customer.find(customerQuery)
-          .select("full_name phone_number email status project createdAt")
+          .select("full_name phone_number email project status createdAt status_history")
           .sort({ createdAt: -1 })
           .lean();
+
+          const customersWithNames = await Promise.all(
+          customers.map(async (customer) => {
+            if (includeCustomers === "true" && customer.status_history?.length) {
+              const updatedHistory = await Promise.all(
+                customer.status_history.map(async (status) => {
+                  if (status.id) {
+                    // Fetch user details by id
+                    const statusUser = await User.findById(status.id).select("full_name role").lean();
+                    return {
+                      ...status,
+                      name: statusUser ? statusUser.full_name : "Unknown",
+                    };
+                  }
+                  return status;
+                })
+              );
+              customer.status_history = updatedHistory;
+            }
+            return customer;
+          })
+        );
 
         return {
           ...associate,
           total_customers: customers.length,
-          customers: includeCustomers === "true" ? customers : undefined, // only include if ?includeCustomers=true
+          // customers: includeCustomers === "true" ? customers : undefined,
+          customers: includeCustomers === "true" ? customersWithNames : undefined,
         };
       })
     );
 
+    // ✅ Final response
     return handleResponse(res, 200, "Associates fetched successfully", {
       results: associatesWithCustomers,
       totalItems: totalAssociates,

@@ -35,6 +35,9 @@ const customerSchema = new mongoose.Schema(
     },
     is_broadcasted: { type: Boolean, default: false },
     broadcasted_to: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    declinedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    
     status_history: [
   {
     id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

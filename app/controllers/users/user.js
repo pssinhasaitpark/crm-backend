@@ -93,7 +93,7 @@ const loginUser = async (req, res) => {
 
     // Step 4️⃣ — Validate status
     if (user.status !== "active") {
-      return handleResponse(res, 403, "Your account is inactive. Please contact admin.");
+      return handleResponse(res, 403, "Your Account is Inactive. Please Contact with Admin to make Account Active.");
     }
 
     // Step 5️⃣ — Check password
@@ -142,10 +142,9 @@ const loginUser = async (req, res) => {
 
 const me = async (req, res) => {
   try {
-    let user;
 
     // 🔍 First try to find in main users
-    user = await User.findById(req.user.id).select("-password -__v -createdBy");
+    const user = await User.findById(req.user.id).select("-password -__v -createdBy");
 
     // 🔍 If not found, try associate users
     if (!user) {
@@ -163,7 +162,66 @@ const me = async (req, res) => {
       user.toObject()
     );
   } catch (error) {
-    console.error("❌ Error fetching user details:", error);
+    console.error("Error fetching user details:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+const getAllUsers = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return handleResponse(res, 403, "Access denied. Only admins can view all users.");
+    }
+
+    const { role, q = "", page = 1, perPage = 10 } = req.query;
+    const filter = {};
+
+    if (role && ["agent", "channel_partner"].includes(role)) {
+      filter.role = role;
+    }
+
+    if (q) {
+      const regex = new RegExp(q, "i");
+      const isValidObjectId = mongoose.Types.ObjectId.isValid(q);
+
+      filter.$or = [
+        { full_name: regex },
+        { email: regex },
+        { phone_number: regex },
+        { location: regex },
+        { company_name: regex },
+      ];
+
+      if (isValidObjectId) {
+        filter.$or.push({ company: new mongoose.Types.ObjectId(String(q)) });
+      }
+    }
+
+    const skip = (Number(page) - 1) * Number(perPage);
+
+    const users = await User.find(filter)
+      .select("-password -__v")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(perPage))
+      .lean();
+
+    if (!users.length) {
+      return handleResponse(res, 404, "No users found for the given criteria.");
+    }
+
+    const totalItems = await User.countDocuments(filter);
+    const totalPages = Math.ceil(totalItems / perPage);
+
+    return handleResponse(res, 200, "Users fetched successfully", {
+      results: users,
+      totalItems,
+      currentPage: Number(page),
+      totalPages,
+      totalItemsOnCurrentPage: users.length,
+    });
+  } catch (error) {
+    console.error("Error fetching users:", error);
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
@@ -172,4 +230,5 @@ export const user = {
   registerUser,
   loginUser,
   me,
+  getAllUsers,
 };

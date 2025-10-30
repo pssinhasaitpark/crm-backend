@@ -31,6 +31,16 @@ export const followUpValidators = Joi.object({
       "any.required": "follow_up_date is required",
       "string.empty": "follow_up_date cannot be empty",
     }),
+
+   call_status: Joi.string()
+  .valid("connected", "not connected")
+  .required()
+  .messages({
+    "any.required": "Call status is required.",
+    "string.base": "Call status must be a string.",
+    "any.only": "Call status must be either 'connected' or 'not connected'.",
+  })
+
 });
 
 export const notesValidators = Joi.object({
