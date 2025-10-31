@@ -10,5 +10,7 @@ router.post("/login", user.loginUser);
 
 router.get("/me", verifyToken,user.me);
 
+router.get("/admin/all", verifyToken, user.getAllUsers);
+
 export default router;
  

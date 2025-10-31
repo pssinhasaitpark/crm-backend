@@ -35,4 +35,6 @@ router.post("/:customerId/note", verifyToken, customers.addNotes);
 
 router.get("/:customerId/notes", verifyToken, customers.getCustomerNotes);
 
+router.get("/admin/:userId", verifyToken, customers.getCustomerDetailsByUserId);
+
 export default router;

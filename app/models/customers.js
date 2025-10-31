@@ -11,7 +11,7 @@ const customerSchema = new mongoose.Schema(
       ref: "Project",
       required: true,
     },
-    personal_phone_number: { type: String, required: true },
+    personal_phone_number: { type: String, required: false },
     company: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company",
@@ -35,6 +35,9 @@ const customerSchema = new mongoose.Schema(
     },
     is_broadcasted: { type: Boolean, default: false },
     broadcasted_to: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    declinedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    
     status_history: [
   {
     id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

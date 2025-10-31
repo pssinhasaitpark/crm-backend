@@ -30,3 +30,20 @@ export const loginAdminValidator = Joi.object({
     "any.required": "Password is required",
   }),
 });
+
+export const updateAdminValidator = Joi.object({
+  name: Joi.string().optional(),
+  email: Joi.string().email().optional(),
+  password: Joi.string().min(6).optional().messages({
+    "string.min": "Password must be at least 6 characters long",
+  }),
+  confirm_password: Joi.string()
+    .when("password", {
+      is: Joi.exist(),
+      then: Joi.required().valid(Joi.ref("password")).messages({
+        "any.only": "Password & Confirm password do not match",
+        "any.required": "Confirm password is required when updating password",
+      }),
+      otherwise: Joi.optional(),
+    }),
+});

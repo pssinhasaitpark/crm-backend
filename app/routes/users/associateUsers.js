@@ -14,4 +14,6 @@ router.get("/generate-associate-link", verifyToken, associateUsers. generateAsso
 
 router.post("/register/associate/:code", associateUsers.createFromAssociateLink);
 
+router.get("/admin/:userId", verifyToken, associateUsers.getAssociatedCPDetailsByUserId);
+
 export default router;
