@@ -7,12 +7,19 @@ import Customers from "../models/customers.js";
 import Project from "../models/projects.js";
 import mongoose from "mongoose";
 import { handleResponse } from "../utils/helper.js";
-import { customerValidators, followUpValidators, notesValidators } from "../validators/customers.js";
+import {
+  customerValidators,
+  followUpValidators,
+  notesValidators,
+  agentCustomerValidator
+} from "../validators/customers.js";
 import MasterStatus from "../models/masterStatus.js";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import customParseFormat from "dayjs/plugin/customParseFormat.js";
 import FollowUp from "../models/followUp.js";
+import { connectedAdmins } from "../utils/socketHandler.js"; // make sure you import this at top of controller file
+import Company from "../models/company.js";
 
 dayjs.extend(utc);
 dayjs.extend(customParseFormat);
@@ -21,6 +28,7 @@ const createCustomer = async (req, res) => {
   try {
     const user = req.user; // logged-in user
 
+    // ✅ Role check
     if (!["agent", "channel_partner", "admin"].includes(user.role)) {
       return handleResponse(
         res,
@@ -29,9 +37,11 @@ const createCustomer = async (req, res) => {
       );
     }
 
-    const { error } = customerValidators.validate(req.body, {
-      abortEarly: false,
-    });
+    // ✅ Choose validator dynamically
+    const validator =
+      user.role === "agent" ? agentCustomerValidator : customerValidators;
+
+    const { error } = validator.validate(req.body, { abortEarly: false });
     if (error) {
       const messages = error.details.map((err) =>
         err.message.replace(/["\\]/g, "")
@@ -48,7 +58,7 @@ const createCustomer = async (req, res) => {
       company,
     } = req.body;
 
-    // ✅ Duplicate checks
+    // ✅ Check duplicates
     const existingPhone = await Customer.findOne({ phone_number });
     if (existingPhone)
       return handleResponse(res, 409, "Phone number already registered.");
@@ -64,62 +74,81 @@ const createCustomer = async (req, res) => {
     const projectDoc = await Project.findById(project);
     if (!projectDoc) return handleResponse(res, 404, "Project not found.");
 
-    // ✅ Determine assigned company
+    // ✅ Determine company
     let assignedCompany;
     if (user.role === "channel_partner" || user.role === "admin") {
-      if (!company) return handleResponse(res, 400, "Company ID is required.");
+      if (!company)
+        return handleResponse(res, 400, "Company ID is required for Admins/Partners.");
       if (!mongoose.Types.ObjectId.isValid(company))
         return handleResponse(res, 400, "Invalid Company ID format.");
       assignedCompany = company;
     } else {
-      assignedCompany = user.company;
+      assignedCompany = user.company; // agent's company from token
     }
 
-    // ✅ Fetch all active agents under the selected company
-    const agents = await User.find({
-      company: assignedCompany,
-      role: "agent",
-      status: "active",
-    }).select("_id full_name email");
+    // ✅ Base lead data
+    let isBroadcasted = true;
+    let broadcastedAgents = [];
+    let isAccepted = false;
+    let acceptedBy = null;
 
-    // ✅ Create the customer
+    // ✅ Agent personal customer logic
+    if (user.role === "agent") {
+      isBroadcasted = false;
+      broadcastedAgents = [user.id];
+      isAccepted = true;
+      acceptedBy = user.id;
+    } else {
+      // ✅ For Admins / Channel Partners: find active agents for broadcast
+      const agents = await User.find({
+        company: assignedCompany,
+        role: "agent",
+        status: "active",
+      }).select("_id full_name email");
+
+      broadcastedAgents = agents.map((a) => a._id);
+    }
+
+    // ✅ Create customer record
     const newCustomer = await Customer.create({
       full_name,
       phone_number,
       email,
-      personal_phone_number,
+      personal_phone_number: user.role === "agent" ? null : personal_phone_number,
       project,
       company: assignedCompany,
-      status: "New", // ✅ Always start as "New"
-      isAccepted: false, // ✅ Not accepted yet
+      status: "New",
+      isAccepted,
       createdBy: {
         id: user.id,
         name: user.name,
         role: user.role,
       },
-      acceptedBy: null,
-      is_broadcasted: true,
-      broadcasted_to: agents.map((a) => a._id),
+      acceptedBy,
+      is_broadcasted: isBroadcasted,
+      broadcasted_to: broadcastedAgents,
     });
 
     const responseData = newCustomer.toObject();
     delete responseData.createdBy;
 
-    // ✅ Log broadcast info for debugging
-    console.log("\n============================");
-    console.log(`📢 Broadcasting new customer to Company [${assignedCompany}]`);
-    console.log(`👤 Created by: ${user.name} (${user.role})`);
-    console.log(`👥 Agents receiving broadcast (${agents.length}):`);
-    agents.forEach((agent) => {
-      console.log(`   - ${agent.full_name} (${agent._id})`);
-    });
-    console.log("============================\n");
+    // ✅ Emit socket only for admin / channel partner
+    if (user.role !== "agent") {
+      req.io.to(assignedCompany.toString()).emit("customer-created", {
+        customer: responseData,
+        message: `📢 New customer created by ${user.full_name}`,
+      });
 
-    // ✅ Socket Broadcast to all agents of that company
-    req.io.to(assignedCompany.toString()).emit("customer-created", {
-      customer: responseData,
-      message: `📢 New customer created by ${user.full_name}`,
-    });
+      console.log("\n============================");
+      console.log(`📢 Broadcasting new customer to Company [${assignedCompany}]`);
+      console.log(`👤 Created by: ${user.name} (${user.role})`);
+      console.log(`👥 Broadcasted to: ${broadcastedAgents.length} agents`);
+      console.log("============================\n");
+    } else {
+      console.log(
+        `✅ Personal customer created by Agent: ${user.name} (${user.id})`
+      );
+    }
 
     return handleResponse(
       res,
@@ -132,6 +161,7 @@ const createCustomer = async (req, res) => {
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
+
 /*
 29 octomber 2025 correcet but not pagiantions
 const getAllCustomers = async (req, res) => {
@@ -202,7 +232,7 @@ const getAllCustomers = async (req, res) => {
 };
 */
 
-//with pagiantions, 30 octomber 2025 
+//with pagiantions, 30 octomber 2025
 const getAllCustomers = async (req, res) => {
   try {
     const user = req.user;
@@ -300,7 +330,7 @@ const getAllCustomers = async (req, res) => {
       project: cust.project?._id || cust.project,
       company: cust.company?._id || cust.company,
       acceptedByName: cust.acceptedBy?.full_name || null,
-      acceptedBy: cust.acceptedBy?._id || cust.acceptedBy, 
+      acceptedBy: cust.acceptedBy?._id || cust.acceptedBy,
     }));
 
     // 🧮 Count accepted customers
@@ -483,7 +513,11 @@ const getCustomerStats = async (req, res) => {
     if (!user) return handleResponse(res, 404, "User not found.");
 
     const { status } = req.query;
-    console.log(`📊🔹 Fetching data for: ${user.full_name} (${user.role}), status: ${status || "ALL"}`);
+    console.log(
+      `📊🔹 Fetching data for: ${user.full_name} (${user.role}), status: ${
+        status || "ALL"
+      }`
+    );
 
     // === CASE 1: If ?status=XYZ → Return filtered customer list ===
     if (status) {
@@ -497,7 +531,7 @@ const getCustomerStats = async (req, res) => {
         query = {
           $and: [
             // { $or: [{ acceptedBy: user._id }, { broadcasted_to: user._id }] },
-             { acceptedBy: user._id, isAccepted: true },
+            { acceptedBy: user._id, isAccepted: true },
             { status },
           ],
         };
@@ -571,17 +605,24 @@ const getCustomerStats = async (req, res) => {
 
     // === CASE 2: No ?status param → Return dashboard stats ===
     const masterStatuses = await MasterStatus.find({ deleted: false });
-    const statusMap = masterStatuses.reduce((acc, s) => ({ ...acc, [s.name]: 0 }), {});
+    const statusMap = masterStatuses.reduce(
+      (acc, s) => ({ ...acc, [s.name]: 0 }),
+      {}
+    );
 
     let stats = {};
 
     if (user.role === "channel_partner") {
-      const totalCustomers = await Customer.countDocuments({ "createdBy.id": user._id });
+      const totalCustomers = await Customer.countDocuments({
+        "createdBy.id": user._id,
+      });
       const statusCounts = await Customer.aggregate([
         { $match: { "createdBy.id": user._id } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]);
-      statusCounts.forEach(({ _id, count }) => (statusMap[_id || "New"] = count));
+      statusCounts.forEach(
+        ({ _id, count }) => (statusMap[_id || "New"] = count)
+      );
       stats = { total: totalCustomers, statusCounts: statusMap };
     } else if (user.role === "agent") {
       const totalCustomers = await Customer.countDocuments({
@@ -592,13 +633,20 @@ const getCustomerStats = async (req, res) => {
         { $match: { acceptedBy: user._id, isAccepted: true } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]);
-      statusCounts.forEach(({ _id, count }) => (statusMap[_id || "New"] = count));
+      statusCounts.forEach(
+        ({ _id, count }) => (statusMap[_id || "New"] = count)
+      );
       stats = { total: totalCustomers, statusCounts: statusMap };
     } else {
       return handleResponse(res, 403, "Access Denied");
     }
 
-    return handleResponse(res, 200, "Customer stats fetched successfully", stats);
+    return handleResponse(
+      res,
+      200,
+      "Customer stats fetched successfully",
+      stats
+    );
   } catch (error) {
     console.error("❌ Error fetching stats/list:", error);
     return handleResponse(res, 500, "Internal Server Error");
@@ -658,8 +706,12 @@ const acceptCustomer = async (req, res) => {
     }
 
     // 4.5️⃣ Check if agent previously declined this customer
-    if (customer.declinedBy?.some(id => id.toString() === agent._id.toString())) {
-      console.log(`🚫 Agent ${agent.full_name} previously declined this customer`);
+    if (
+      customer.declinedBy?.some((id) => id.toString() === agent._id.toString())
+    ) {
+      console.log(
+        `🚫 Agent ${agent.full_name} previously declined this customer`
+      );
       return handleResponse(
         res,
         400,
@@ -708,6 +760,19 @@ const acceptCustomer = async (req, res) => {
       });
     }
 
+    // 🔟 Notify all connected admins (real-time update)
+
+    for (const [adminId, socketId] of connectedAdmins.entries()) {
+      io.to(socketId).emit("customer-accepted-by-agent", {
+        message: `Customer ${customer.full_name} accepted by ${agent.full_name}`,
+        customerId,
+        agentId: agent._id,
+        agentName: agent.full_name,
+        companyId: agent.company?.toString(),
+      });
+      console.log(`📢 Notified Admin ${adminId} about accepted customer`);
+    }
+
     console.log("✅ Accept customer flow completed successfully\n");
 
     return handleResponse(
@@ -752,7 +817,11 @@ const declineCustomer = async (req, res) => {
     );
 
     if (alreadyDeclined) {
-      return handleResponse(res, 400, "You have already declined this customer");
+      return handleResponse(
+        res,
+        400,
+        "You have already declined this customer"
+      );
     }
 
     customer.declinedBy.push(agent._id);
@@ -807,7 +876,9 @@ const getAllBroadcastedCustomers = async (req, res) => {
     const user = req.user;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    console.log(`\n📡 Fetching broadcasted customers for: ${user.full_name} (${user.role})`);
+    console.log(
+      `\n📡 Fetching broadcasted customers for: ${user.full_name} (${user.role})`
+    );
 
     // 🔍 Match only broadcasted customers
     let matchStage = {
@@ -829,17 +900,13 @@ const getAllBroadcastedCustomers = async (req, res) => {
 
       // Include broadcasted customers or accepted by this agent
       matchStage.$and.push({
-        $or: [
-          { broadcasted_to: { $in: [userId] } },
-          { acceptedBy: userId }
-        ]
+        $or: [{ broadcasted_to: { $in: [userId] } }, { acceptedBy: userId }],
       });
 
       // 🚫 Exclude customers this agent has declined
       matchStage.$and.push({
-        declinedBy: { $nin: [userId] }
+        declinedBy: { $nin: [userId] },
       });
-
     } else if (user.role === "admin") {
       // Admin can see all, no extra filter needed
     } else {
@@ -910,12 +977,17 @@ const getAllBroadcastedCustomers = async (req, res) => {
 
     console.log(`✅ Broadcasted Customers Found: ${customers.length}`);
 
-    return handleResponse(res, 200, "Broadcasted customers fetched successfully", {
-      results: customers,
-      totalItems,
-      currentPage: parseInt(page),
-      totalPages: Math.ceil(totalItems / limit),
-    });
+    return handleResponse(
+      res,
+      200,
+      "Broadcasted customers fetched successfully",
+      {
+        results: customers,
+        totalItems,
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalItems / limit),
+      }
+    );
   } catch (error) {
     console.error("❌ Error fetching broadcasted customers:", error);
     return handleResponse(res, 500, "Internal Server Error");
@@ -1046,7 +1118,7 @@ const updateCustomerStatus = async (req, res) => {
 };
 */
 
-//admin also update 
+//admin also update
 const updateCustomerStatus = async (req, res) => {
   const io = req.io;
   try {
@@ -1174,10 +1246,15 @@ const getCustomerStatusHistory = async (req, res) => {
       return handleResponse(res, 400, "Invalid Customer ID");
     }
 
-    const customer = await Customer.findById(id, "status status_history createdAt createdBy").lean();
+    const customer = await Customer.findById(
+      id,
+      "status status_history createdAt createdBy"
+    ).lean();
     if (!customer) return handleResponse(res, 404, "Customer not found");
 
-    let history = Array.isArray(customer.status_history) ? [...customer.status_history] : [];
+    let history = Array.isArray(customer.status_history)
+      ? [...customer.status_history]
+      : [];
 
     // 🔹 Add initial "New" entry if missing
     const hasNewStatus = history.some((entry) => entry.status === "New");
@@ -1196,7 +1273,10 @@ const getCustomerStatusHistory = async (req, res) => {
       .map((entry) => entry.id)
       .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
 
-    const users = await User.find({ _id: { $in: userIds } }, "full_name").lean();
+    const users = await User.find(
+      { _id: { $in: userIds } },
+      "full_name"
+    ).lean();
     const userMap = users.reduce((acc, user) => {
       acc[user._id.toString()] = user.full_name;
       return acc;
@@ -1225,7 +1305,9 @@ const addFollowUp = async (req, res) => {
     const { customerId } = req.params;
     const user = req.user;
 
-    const { error } = followUpValidators.validate(req.body, { abortEarly: false });
+    const { error } = followUpValidators.validate(req.body, {
+      abortEarly: false,
+    });
     if (error) return handleResponse(res, 400, error.details[0].message);
 
     const { task, notes, follow_up_date, call_status } = req.body;
@@ -1261,7 +1343,12 @@ const addFollowUp = async (req, res) => {
 
     await followUpDoc.save();
 
-    return handleResponse(res, 201, "Follow-up added successfully", followUpData);
+    return handleResponse(
+      res,
+      201,
+      "Follow-up added successfully",
+      followUpData
+    );
   } catch (err) {
     console.error("Error adding follow-up:", err);
     return handleResponse(res, 500, "Internal Server Error");
@@ -1272,13 +1359,14 @@ const getCustomerFollowUps = async (req, res) => {
   try {
     const { customerId } = req.params;
 
-    const followUpDoc = await FollowUp.findOne({ customer: customerId })
-      .populate("customer", "full_name");
+    const followUpDoc = await FollowUp.findOne({
+      customer: customerId,
+    }).populate("customer", "full_name");
 
     if (!followUpDoc)
       return handleResponse(res, 404, "No follow-ups found for this customer");
 
-    const formatted = followUpDoc.follow_ups.map(f => ({
+    const formatted = followUpDoc.follow_ups.map((f) => ({
       task: f.task,
       notes: f.notes,
       follow_up_date: f.follow_up_date, // already DD/MM/YYYY
@@ -1345,13 +1433,15 @@ const getCustomerNotes = async (req, res) => {
   try {
     const { customerId } = req.params;
 
-    const noteDoc = await Note.findOne({ customer: customerId })
-      .populate("customer", "full_name");
+    const noteDoc = await Note.findOne({ customer: customerId }).populate(
+      "customer",
+      "full_name"
+    );
 
     if (!noteDoc)
       return handleResponse(res, 404, "No notes found for this customer");
 
-    const formatted = noteDoc.notes.map(n => ({
+    const formatted = noteDoc.notes.map((n) => ({
       message: n.message,
       added_by: n.added_by,
       created_at: n.created_at,
@@ -1363,6 +1453,70 @@ const getCustomerNotes = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching notes:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+
+const getCustomerDetailsByUserId = async (req, res) => {
+  try {
+    // Ensure only admin can access this route
+    if (req.user.role !== "admin") {
+      return handleResponse(res, 403, "Access denied. Only admins can view user customers.");
+    }
+
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return handleResponse(res, 400, "Invalid user ID.");
+    }
+
+    const user = await User.findById(userId).select("role");
+    if (!user) {
+      return handleResponse(res, 404, "User not found.");
+    }
+
+    let customersQuery = {};
+
+    if (user.role === "agent") {
+      customersQuery = { acceptedBy: userId };
+    } else if (user.role === "channel_partner") {
+      customersQuery = { "createdBy.id": userId };
+    } else {
+      return handleResponse(res, 400, "User role not supported for this operation.");
+    }
+
+    // Fetch customers with project and company populated
+    const customers = await Customer.find(customersQuery)
+      .select("full_name phone_number email project personal_phone_number company status status_history")
+      .populate({ path: "project", select: "project_title" })
+      .populate({ path: "company", select: "companyName" })
+      .lean();
+
+    // Map project and company names into the customer objects
+    const enhancedCustomers = customers.map(customer => ({
+      _id: customer._id,
+      full_name: customer.full_name,
+      phone_number: customer.phone_number,
+      email: customer.email,
+      project: customer.project?._id || null,
+      projectName: customer.project?.project_title || null,
+      personal_phone_number: customer.personal_phone_number,
+      company: customer.company?._id || null,
+      companyName: customer.company?.companyName || null,
+      status: customer.status,
+      status_history: customer.status_history,
+    }));
+
+    const customerCount = enhancedCustomers.length;
+
+    return handleResponse(res, 200, "Customer details fetched successfully", {
+      customerCount,
+      results: enhancedCustomers,
+    });
+
+  } catch (error) {
+    console.error("Error fetching customer details by user ID:", error);
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
@@ -1383,4 +1537,5 @@ export const customers = {
   getCustomerFollowUps,
   addNotes,
   getCustomerNotes,
+  getCustomerDetailsByUserId
 };

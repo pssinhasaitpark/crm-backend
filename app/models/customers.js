@@ -11,7 +11,7 @@ const customerSchema = new mongoose.Schema(
       ref: "Project",
       required: true,
     },
-    personal_phone_number: { type: String, required: true },
+    personal_phone_number: { type: String, required: false },
     company: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company",

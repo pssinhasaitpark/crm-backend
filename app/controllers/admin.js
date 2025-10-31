@@ -5,7 +5,11 @@ import AssociateUser from "../models/users/associateUsers.js";
 import Customer from "../models/customers.js";
 import { connectedUsers } from "../utils/socketHandler.js";
 import { handleResponse } from "../utils/helper.js";
-import { registerAdminValidator, loginAdminValidator,} from "../validators/admin.js";
+import {
+  registerAdminValidator,
+  loginAdminValidator,
+  updateAdminValidator,
+} from "../validators/admin.js";
 import { signAccessToken } from "../middlewares/jwtAuth.js";
 import mongoose from "mongoose";
 
@@ -154,20 +158,30 @@ const updateUserStatusById = async (req, res) => {
 
     if (!updatedUser) return handleResponse(res, 404, "User not found");
 
-    // ✅ Real-time logout if status is inactive
-    if (status === "inactive") {
+    // 🔴 Real-time logout if status is inactive
+    if (status === "inactive" && req.io) {
       const socketId = connectedUsers.get(updatedUser._id.toString());
-      if (socketId && req.io) {
-        req.io.to(socketId).emit("forceLogout", {
+      if (socketId) {
+        req.io.to(socketId).emit("force-logout", {
           title: "Account Deactivated",
           message:
-            "Your account has been set to Inactive by the Admin. Please contact the Admin to reactivate it.",
+            "🔴 Your account has been set to Inactive by the Admin. Please contact the Admin to reactivate it.",
           type: "warning",
         });
+
+        // Disconnect the socket
+        const socket = req.io.sockets.sockets.get(socketId);
+        if (socket) socket.disconnect(true);
+
+        // Remove from connectedUsers map
+        connectedUsers.delete(updatedUser._id.toString());
       }
     }
 
-    return handleResponse(res, 200, `User status updated to ${status} successfully`,
+    return handleResponse(
+      res,
+      200,
+      `User status updated to ${status} successfully`,
       updatedUser.toObject()
     );
   } catch (error) {
@@ -192,7 +206,11 @@ const adminBroadcastingCustomerById = async (req, res) => {
 
     // 🔐 Allow only admin
     if (userRole !== "admin") {
-      return handleResponse(res, 403, "Access denied. Only admin can broadcast customers.");
+      return handleResponse(
+        res,
+        403,
+        "Access denied. Only admin can broadcast customers."
+      );
     }
 
     // ✅ Validate IDs
@@ -215,24 +233,52 @@ const adminBroadcastingCustomerById = async (req, res) => {
     if (agents === "all") {
       // Broadcast to all active agents of that company
       const [mainAgents, associateAgents] = await Promise.all([
-        User.find({ company: companyId, role: "agent", status: "active" }).select("_id"),
-        AssociateUser.find({ company: companyId, role: "agent", status: "active" }).select("_id"),
+        User.find({
+          company: companyId,
+          role: "agent",
+          status: "active",
+        }).select("_id"),
+        AssociateUser.find({
+          company: companyId,
+          role: "agent",
+          status: "active",
+        }).select("_id"),
       ]);
 
-      targetAgents = [...mainAgents, ...associateAgents].map((a) => a._id.toString());
+      targetAgents = [...mainAgents, ...associateAgents].map((a) =>
+        a._id.toString()
+      );
 
       if (!targetAgents.length)
-        return handleResponse(res, 404, "No active agents found for this company.");
+        return handleResponse(
+          res,
+          404,
+          "No active agents found for this company."
+        );
     } else if (mongoose.Types.ObjectId.isValid(agents)) {
       // Single agent case
       const [userAgent, associateAgent] = await Promise.all([
-        User.findOne({ _id: agents, company: companyId, role: "agent", status: "active" }),
-        AssociateUser.findOne({ _id: agents, company: companyId, role: "agent", status: "active" }),
+        User.findOne({
+          _id: agents,
+          company: companyId,
+          role: "agent",
+          status: "active",
+        }),
+        AssociateUser.findOne({
+          _id: agents,
+          company: companyId,
+          role: "agent",
+          status: "active",
+        }),
       ]);
 
       const validAgent = userAgent || associateAgent;
       if (!validAgent)
-        return handleResponse(res, 400, "Invalid agent ID or agent not part of this company.");
+        return handleResponse(
+          res,
+          400,
+          "Invalid agent ID or agent not part of this company."
+        );
 
       targetAgents = [validAgent._id.toString()];
     } else {
@@ -296,10 +342,18 @@ const getAllAgentsByCompanyId = async (req, res) => {
     // ✅ Fetch agents from both User and AssociateUser
     const [mainAgents, associateAgents] = await Promise.all([
       User.find({ company: companyId, role: "agent", status: "active" })
-        .select("_id full_name email phone_number location company company_name role status")
+        .select(
+          "_id full_name email phone_number location company company_name role status"
+        )
         .lean(),
-      AssociateUser.find({ company: companyId, role: "agent", status: "active" })
-        .select("_id full_name email phone_number location company company_name role status createdBy")
+      AssociateUser.find({
+        company: companyId,
+        role: "agent",
+        status: "active",
+      })
+        .select(
+          "_id full_name email phone_number location company company_name role status createdBy"
+        )
         .lean(),
     ]);
 
@@ -321,11 +375,55 @@ const getAllAgentsByCompanyId = async (req, res) => {
   }
 };
 
+const updateAdminById = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const userRole = req.user?.role;
+
+    if (userRole !== "admin") {
+      return handleResponse(
+        res,
+        403,
+        "Access denied. Only admins can update their own details."
+      );
+    }
+
+    // Validate request body
+    const { error, value } = updateAdminValidator.validate(req.body, {
+      abortEarly: false,
+    });
+    if (error) {
+      const messages = error.details.map((err) =>
+        err.message.replace(/["\\]/g, "")
+      );
+      return handleResponse(res, 400, messages.join(", "));
+    }
+
+    // Hash password if it exists
+    if (value.password) {
+      value.password = await bcrypt.hash(value.password, 10);
+      delete value.confirm_password; // remove confirm_password
+    }
+
+    const updatedAdmin = await Admin.findByIdAndUpdate(userId, value, {
+      new: true,
+    });
+
+    return handleResponse(res, 200, "Admin details updated successfully",
+      updatedAdmin ? updatedAdmin.toObject() : null
+    );
+  } catch (err) {
+    console.error("Error updating admin details:", err);
+    return handleResponse(res, 500, "Server Error or something went wrong.");
+  }
+};
+
 export const admin = {
   registerAdmin,
   loginAdmin,
   me,
   updateUserStatusById,
   adminBroadcastingCustomerById,
-  getAllAgentsByCompanyId
+  getAllAgentsByCompanyId,
+  updateAdminById,
 };

@@ -34,7 +34,8 @@ app.use(
       "http://192.168.0.144:8082",
       "https://crm-cp-admin.vercel.app",
       "https://crm-portal-five.vercel.app",
-      "http://127.0.0.1:5500"
+      "http://127.0.0.1:5500",
+      "https://crm-admin-nine.vercel.app"
     ],
     methods: ["GET", "POST", "HEAD", "PUT", "PATCH", "DELETE"],
     optionsSuccessStatus: 200,
@@ -67,6 +68,7 @@ const io = new SocketIO(server, {
       "http://192.168.0.144:8082",
       "https://crm-cp-admin.vercel.app",
       "http://127.0.0.1:5500",
+      "https://crm-admin-nine.vercel.app"
     ],
     methods: ["GET", "POST"],
     credentials: true,

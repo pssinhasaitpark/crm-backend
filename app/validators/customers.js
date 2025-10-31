@@ -53,13 +53,23 @@ export const customerValidators = Joi.object({
     full_name: Joi.string().required().messages({
         "any.required": "Name is required",
     }),
-    phone_number: Joi.string()
-        .pattern(/^[6-9][0-9]{9}$/)
-        .required()
-        .messages({
-            "string.pattern.base": "Please enter a valid phone number and must be exactly 10 digits long",
-            "any.required": "Phone number is required",
-        }),
+     phone_number: Joi.string()
+    .required()
+    .pattern(/^[0-9]+$/, "numbers only")
+    .messages({
+      "string.pattern.name": "Phone Number must contain only digits",
+      "any.required": "Phone Number is required",
+    })
+    // Check starting digit (6–9)
+    .custom((value, helpers) => {
+      if (!/^[6-9]/.test(value)) {
+        return helpers.message("Please enter a valid Phone Number (must start with 6–9)");
+      }
+      if (value.length !== 10) {
+        return helpers.message("Phone Number must be exactly 10 digits long");
+      }
+      return value; // validation passes
+    }),
     email: Joi.string().email().required().lowercase().trim().messages({
         "string.email": "Invalid email format",
         "any.required": "Email is required",
@@ -70,10 +80,27 @@ export const customerValidators = Joi.object({
             "any.required": "Project is required",
         }),
     personal_phone_number: Joi.string()
-        .pattern(/^[6-9][0-9]{9}$/).required().messages({
-            "string.pattern.base": "Please enter a valid phone number and must be exactly 10 digits long",
-            "any.required": "Personal phone number is required",
-        }),
+    .required()
+    .pattern(/^[0-9]+$/, "numbers only")
+    .messages({
+      "string.pattern.name": "Personal phone number must contain only digits",
+      "any.required": "Personal phone number is required",
+    })
+    // Check starting digit (6–9)
+    .custom((value, helpers) => {
+      if (!/^[6-9]/.test(value)) {
+        return helpers.message("Please enter a valid Personal Phone Number (must start with 6–9)");
+      }
+      if (value.length !== 10) {
+        return helpers.message("Personal Phone Number must be exactly 10 digits long");
+      }
+      return value; // validation passes
+    }),
     company: Joi.string().hex().length(24).optional(),
 
 }); 
+
+export const agentCustomerValidator = customerValidators.fork(
+  ["personal_phone_number", "company"],
+  (schema) => schema.optional()
+);

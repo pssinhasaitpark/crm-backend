@@ -16,4 +16,6 @@ router.patch("/broadcast/:customerId", verifyToken, admin.adminBroadcastingCusto
 
 router.get("/all/agents/:companyId", verifyToken, admin.getAllAgentsByCompanyId);
 
+router.patch("/update", verifyToken, admin.updateAdminById);
+
 export default router;
