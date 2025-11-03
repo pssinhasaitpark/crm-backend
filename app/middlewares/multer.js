@@ -133,5 +133,47 @@ const uploadFilesToCloudinary = async (files) => {
 
   return results;
 };
+/*
+const csvFileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    "text/csv",
+    "application/vnd.ms-excel",
+    "application/octet-stream",
+    "text/plain",
+  ];
+
+  if (allowedTypes.includes(file.mimetype) || file.originalname.endsWith(".csv")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only CSV files are allowed!"), false);
+  }
+};
+
+export const uploadCSV = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: csvFileFilter,
+}).single("csv_file");
+
+*/
+
+const csvFileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    "text/csv",
+    "application/vnd.ms-excel",
+    "application/octet-stream",
+    "text/plain",
+  ];
+
+  if (allowedTypes.includes(file.mimetype) || file.originalname.endsWith(".csv")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only CSV files are allowed!"), false);
+  }
+};
+
+export const uploadCSV = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: csvFileFilter,
+}).single("csv_file");
 
 export { cloudinary, upload, uploadToCloudinary, uploadFilesToCloudinary };

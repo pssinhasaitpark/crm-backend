@@ -7,19 +7,16 @@ import Customers from "../models/customers.js";
 import Project from "../models/projects.js";
 import mongoose from "mongoose";
 import { handleResponse } from "../utils/helper.js";
-import {
-  customerValidators,
-  followUpValidators,
-  notesValidators,
-  agentCustomerValidator
-} from "../validators/customers.js";
+import { customerValidators, followUpValidators, notesValidators, agentCustomerValidator } from "../validators/customers.js";
 import MasterStatus from "../models/masterStatus.js";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import customParseFormat from "dayjs/plugin/customParseFormat.js";
 import FollowUp from "../models/followUp.js";
-import { connectedAdmins } from "../utils/socketHandler.js"; // make sure you import this at top of controller file
+import { connectedAdmins } from "../utils/socketHandler.js";
 import Company from "../models/company.js";
+import csv from "csv-parser";
+import { Readable } from "node:stream";
 
 dayjs.extend(utc);
 dayjs.extend(customParseFormat);
@@ -78,7 +75,11 @@ const createCustomer = async (req, res) => {
     let assignedCompany;
     if (user.role === "channel_partner" || user.role === "admin") {
       if (!company)
-        return handleResponse(res, 400, "Company ID is required for Admins/Partners.");
+        return handleResponse(
+          res,
+          400,
+          "Company ID is required for Admins/Partners."
+        );
       if (!mongoose.Types.ObjectId.isValid(company))
         return handleResponse(res, 400, "Invalid Company ID format.");
       assignedCompany = company;
@@ -114,7 +115,8 @@ const createCustomer = async (req, res) => {
       full_name,
       phone_number,
       email,
-      personal_phone_number: user.role === "agent" ? null : personal_phone_number,
+      personal_phone_number:
+        user.role === "agent" ? null : personal_phone_number,
       project,
       company: assignedCompany,
       status: "New",
@@ -140,7 +142,9 @@ const createCustomer = async (req, res) => {
       });
 
       console.log("\n============================");
-      console.log(`📢 Broadcasting new customer to Company [${assignedCompany}]`);
+      console.log(
+        `📢 Broadcasting new customer to Company [${assignedCompany}]`
+      );
       console.log(`👤 Created by: ${user.name} (${user.role})`);
       console.log(`👥 Broadcasted to: ${broadcastedAgents.length} agents`);
       console.log("============================\n");
@@ -162,83 +166,192 @@ const createCustomer = async (req, res) => {
   }
 };
 
-/*
-29 octomber 2025 correcet but not pagiantions
-const getAllCustomers = async (req, res) => {
+const bulkUploadCustomersCSV = async (req, res) => {
   try {
     const user = req.user;
-    let query = {};
 
-    console.log(
-      "\n📋 Fetching customers for:",
-      user.role,
-      "-",
-      user.full_name || user.name || user._id
+    // 🔒 Allow only admins
+    if (user.role !== "admin") {
+      return handleResponse(res, 403, "Only admins can bulk upload customers.");
+    }
+
+    // 🧾 Validate uploaded file
+    if (!req.file || !req.file.buffer) {
+      return handleResponse(res, 400, "CSV file is required.");
+    }
+
+    const buffer = req.file.buffer;
+    if (buffer.length === 0) {
+      return handleResponse(res, 400, "Uploaded file is empty or invalid.");
+    }
+
+    // 🧩 Convert buffer → readable stream
+    const readable = Readable.from(buffer);
+    readable.setEncoding("utf-8");
+
+    const csvData = [];
+    await new Promise((resolve, reject) => {
+      readable
+        .pipe(csv())
+        .on("data", (row) => csvData.push(row))
+        .on("end", resolve)
+        .on("error", reject);
+    });
+
+    if (csvData.length === 0) {
+      return handleResponse(res, 400, "CSV file is empty or invalid.");
+    }
+
+    // 🗂️ Collect unique project & company IDs
+    const allProjectIds = [
+      ...new Set(csvData.map((r) => r.project?.trim()).filter(Boolean)),
+    ];
+    const allCompanyIds = [
+      ...new Set(csvData.map((r) => r.company?.trim()).filter(Boolean)),
+    ];
+
+    // ✅ Fetch existing Project & Company IDs
+    const existingProjects = await Project.find({
+      _id: { $in: allProjectIds },
+    }).select("_id");
+
+    const existingCompanies = await Company.find({
+      _id: { $in: allCompanyIds },
+    }).select("_id");
+
+    const validProjectSet = new Set(
+      existingProjects.map((p) => p._id.toString())
+    );
+    const validCompanySet = new Set(
+      existingCompanies.map((c) => c._id.toString())
     );
 
-    // 👑 ADMIN — get everything
-    if (user.role === "admin") {
-      query = {};
-    }
+    const validRecords = [];
+    const invalidRecords = [];
 
-    // 🧑‍💼 CHANNEL PARTNER — get customers they created (regardless of accepted or not)
-    else if (user.role === "channel_partner") {
-      query = {
-        $or: [
-          { "createdBy.id": user._id?.toString() },
-          { "createdBy.id": user.id?.toString() },
-        ],
+    // 🧠 Validate each CSV row
+    for (let i = 0; i < csvData.length; i++) {
+      const row = csvData[i];
+
+      const data = {
+        full_name: row.full_name?.trim(),
+        phone_number: row.phone_number?.trim(),
+        email: row.email?.trim(),
+        personal_phone_number: row.personal_phone_number?.trim(),
+        project: row.project?.trim(),
+        company: row.company?.trim(),
       };
+
+      // ✅ 1️⃣ Joi validation
+      const { error } = customerValidators.validate(data, {
+        abortEarly: false,
+      });
+      if (error) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: error.details.map((e) => e.message.replace(/["\\]/g, "")),
+        });
+        continue;
+      }
+
+      // ✅ 2️⃣ Project / Company existence check
+      if (data.project && !validProjectSet.has(data.project)) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: [`Invalid or non-existing Project ID: ${data.project}`],
+        });
+        continue;
+      }
+
+      if (data.company && !validCompanySet.has(data.company)) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: [`Invalid or non-existing Company ID: ${data.company}`],
+        });
+        continue;
+      }
+
+      // ✅ 3️⃣ Duplicate check
+      const existing = await Customer.findOne({
+        $or: [{ phone_number: data.phone_number }, { email: data.email }],
+      });
+
+      if (existing) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: ["Customer with same phone or email already exists"],
+        });
+        continue;
+      }
+
+      // ✅ All good
+      validRecords.push({
+        ...data,
+        status: "New",
+        isAccepted: false,
+        is_broadcasted: true,
+        createdBy: {
+          id: user.id,
+          name: user.name,
+          role: user.role,
+        },
+      });
     }
 
-    // 🧍 AGENT — get customers they accepted
-    else if (user.role === "agent") {
-      query = {
-        acceptedBy: user._id?.toString() || user.id?.toString(),
-        isAccepted: true,
-      };
+    // ❌ Abort if ANY invalid rows found
+    if (invalidRecords.length > 0) {
+      // Collect unique error messages for better feedback
+      const uniqueErrors = [
+        ...new Set(invalidRecords.flatMap((r) => r.errors)),
+      ];
+
+      let message = "";
+      if (uniqueErrors.length === 1) {
+        message = `Some rows failed due to: ${uniqueErrors[0]}`;
+      } else {
+        message = `Some rows failed due to multiple issues: ${uniqueErrors.join(
+          ", "
+        )}`;
+      }
+
+      message += ` (${invalidRecords.length} rows failed)`;
+
+      return handleResponse(res, 400, message, {
+        failed_count: invalidRecords.length,
+        failed_records: invalidRecords,
+      });
     }
 
-    // 🚫 INVALID ROLE
-    else {
-      console.log("🚫 Unauthorized role:", user.role);
-      return handleResponse(res, 403, "Access Denied.");
+    // ✅ Insert only if ALL valid
+    const inserted = await Customer.insertMany(validRecords, {
+      ordered: false,
+    });
+
+    // 📢 Emit socket event
+    if (user.company) {
+      req.io.to(user.company.toString()).emit("bulk-customers-created", {
+        count: inserted.length,
+        message: `📢 ${inserted.length} new customers uploaded by Admin ${user.full_name}`,
+      });
     }
 
-    console.log("🔍 Query Used:", JSON.stringify(query, null, 2));
-
-    const customers = await Customers.find(query)
-      .sort({ createdAt: -1 })
-      .lean();
-
-    if (!customers.length) {
-      console.log("📭 No customers found for this user.");
-      return handleResponse(res, 200, "No customers found.", { results: [] });
-    }
-
-    console.log(`✅ Found ${customers.length} customers for ${user.role}`);
-
-    // Optional: Show accepted ones separately in logs
-    const accepted = customers.filter((c) => c.isAccepted);
-    console.log(`📦 Accepted Customers: ${accepted.length}`);
-
-    return handleResponse(res, 200, "Customers fetched successfully", {
-      results: customers,
+    return handleResponse(res, 201, "Bulk upload completed", {
+      success_count: inserted.length,
     });
   } catch (error) {
-    console.error("❌ Error Fetching Customers:", error);
-    return handleResponse(res, 500, "Internal Server Error.");
+    console.error("Bulk Upload Error:", error);
+    return handleResponse(res, 500, "Internal Server Error", {
+      error: error.message,
+    });
   }
 };
-*/
 
-//with pagiantions, 30 octomber 2025
 const getAllCustomers = async (req, res) => {
   try {
     const user = req.user;
     let query = {};
 
-    const { q = "", page = 1, perPage = 20 } = req.query;
+    const { q = "", page = 1 } = req.query;
 
     console.log(
       "\n📋 Fetching customers for:",
@@ -297,7 +410,7 @@ const getAllCustomers = async (req, res) => {
     console.log("🔍 Final Query Used:", JSON.stringify(query, null, 2));
 
     // 🧮 Pagination
-    const skip = (Number(page) - 1) * Number(perPage);
+    // const skip = (Number(page) - 1) * Number(perPage);
 
     // 🚀 Fetch customers with populated project + company
     const customers = await Customers.find(query)
@@ -305,12 +418,12 @@ const getAllCustomers = async (req, res) => {
       .populate("company", "companyName") // ✅ correct field name
       .populate("acceptedBy", "full_name")
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(perPage))
+      // .skip(skip)
+      // .limit(Number(perPage))
       .lean();
 
     const totalItems = await Customers.countDocuments(query);
-    const totalPages = Math.ceil(totalItems / Number(perPage));
+    // const totalPages = Math.ceil(totalItems / Number(perPage));
 
     if (!customers.length) {
       return handleResponse(res, 200, "No customers found.", {
@@ -340,10 +453,10 @@ const getAllCustomers = async (req, res) => {
     return handleResponse(res, 200, "Customers fetched successfully", {
       results: formattedCustomers,
       totalItems,
-      currentPage: Number(page),
-      totalPages,
-      totalItemsOnCurrentPage: formattedCustomers.length,
-      acceptedCount,
+      // currentPage: Number(page),
+      // totalPages,
+      // totalItemsOnCurrentPage: formattedCustomers.length,
+      // acceptedCount,
     });
   } catch (error) {
     console.error("❌ Error Fetching Customers:", error);
@@ -994,131 +1107,6 @@ const getAllBroadcastedCustomers = async (req, res) => {
   }
 };
 
-/*
-only agent / cp, not admin can update customer status
-const updateCustomerStatus = async (req, res) => {
-  const io = req.io;
-  try {
-    const { id } = req.params;
-    const { status: masterStatusId } = req.body;
-    const { id: userId, role: userRole, full_name: userName } = req.user;
-
-    console.log("📥 Incoming request to update customer status:", {
-      customerId: id,
-      masterStatusId,
-      userId,
-      userRole,
-      userName,
-    });
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return handleResponse(res, 400, "Invalid Customer ID");
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(masterStatusId)) {
-      return handleResponse(res, 400, "Invalid Status ID");
-    }
-
-    const customer = await Customer.findById(id);
-    if (!customer) {
-      return handleResponse(res, 404, "Customer not found");
-    }
-
-    // 🔐 Role-based access check
-    let hasAccess = false;
-
-    if (userRole === "channel_partner") {
-      hasAccess = customer.createdBy?.id?.toString() === userId.toString();
-    }
-
-    if (userRole === "agent") {
-      const isAccepted = customer.acceptedBy?.toString() === userId.toString();
-      const isBroadcasted =
-        customer.is_broadcasted &&
-        Array.isArray(customer.broadcasted_to) &&
-        customer.broadcasted_to
-          .map((id) => id.toString())
-          .includes(userId.toString());
-      hasAccess = isAccepted || isBroadcasted;
-    }
-
-    if (!hasAccess) {
-      return handleResponse(
-        res,
-        403,
-        "Access denied: You are not authorized to update this customer's status."
-      );
-    }
-
-    // ✅ Validate Master Status
-    const masterStatus = await MasterStatus.findOne({
-      _id: masterStatusId,
-      deleted: false,
-    });
-
-    if (!masterStatus) {
-      return handleResponse(res, 400, "Invalid Status ID");
-    }
-
-    console.log("🔄 Updating customer status to:", masterStatus.name);
-
-    // === Update and Track Status History ===
-    const newStatusEntry = {
-      id: userId,
-      name: userName,
-      role: userRole,
-      status: masterStatus.name,
-      updated_at: new Date(),
-    };
-
-    if (!Array.isArray(customer.status_history)) {
-      customer.status_history = [];
-    }
-
-    customer.status = masterStatus.name;
-    customer.status_history.push(newStatusEntry);
-    customer.updatedAt = new Date();
-
-    await customer.save();
-
-    console.log("✅ Customer status updated successfully:", {
-      id: customer._id,
-      status: customer.status,
-    });
-
-    // === Real-Time Socket Notifications ===
-    // Notify the user who created the customer (if CP)
-    if (customer.createdBy?.id) {
-      io.to(customer.createdBy.id.toString()).emit("customer_status_updated", {
-        customerId: customer._id,
-        newStatus: masterStatus.name,
-        updatedBy: userName,
-        updatedRole: userRole,
-        message: `Customer status changed to ${masterStatus.name} by ${userName}`,
-      });
-    }
-
-    // Notify the accepted agent (if exists)
-    if (customer.acceptedBy) {
-      io.to(customer.acceptedBy.toString()).emit("customer_status_updated", {
-        customerId: customer._id,
-        newStatus: masterStatus.name,
-        updatedBy: userName,
-        updatedRole: userRole,
-      });
-    }
-
-    return handleResponse(res, 200, "Customer status updated successfully", {
-      customer,
-    });
-  } catch (error) {
-    console.error("❌ Error updating customer status:", error);
-    return handleResponse(res, 500, "Internal Server Error");
-  }
-};
-*/
-
-//admin also update
 const updateCustomerStatus = async (req, res) => {
   const io = req.io;
   try {
@@ -1327,7 +1315,7 @@ const addFollowUp = async (req, res) => {
         name: user.username,
         role: user.user_role,
       },
-      created_at: new Date(),
+      createdAt: new Date(),
     };
 
     // ✅ Find or create FollowUp doc
@@ -1371,7 +1359,7 @@ const getCustomerFollowUps = async (req, res) => {
       notes: f.notes,
       follow_up_date: f.follow_up_date, // already DD/MM/YYYY
       added_by: f.added_by,
-      created_at: f.created_at,
+      createdAt: f.createdAt,
     }));
 
     return handleResponse(res, 200, "Follow-ups fetched successfully", {
@@ -1381,6 +1369,56 @@ const getCustomerFollowUps = async (req, res) => {
   } catch (error) {
     console.error("Error fetching follow-ups:", error);
     return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+const getMyFollowUps = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const leads = await FollowUp.find({
+      "follow_ups.added_by.id": user.id,
+    })
+      .populate("customer", "full_name email phone_number company_name")
+      .select("customer follow_ups");
+
+    const myFollowUps = [];
+
+    for (const lead of leads) {
+      // Filter follow-ups added by this user
+      const userFollowUps = lead.follow_ups
+        .filter((fu) => fu.added_by?.id?.toString() === user.id.toString())
+        // Sort latest first using createdAt
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      for (const fu of userFollowUps) {
+        const addedByUser = await User.findById(fu.added_by.id).select(
+          "full_name"
+        );
+
+        myFollowUps.push({
+          customer_name: lead.customer?.full_name || "Unknown",
+          customer_id: lead.customer?._id,
+          task: fu.task,
+          notes: fu.notes,
+          follow_up_date: fu.follow_up_date,
+          call_status: fu.call_status,
+          added_by: fu.added_by.id,
+          addedByName: addedByUser?.full_name || "Unknown",
+          createdAt: fu.createdAt, // optional, useful for debugging
+        });
+      }
+    }
+
+    // Global sort: newest first across all customers
+    myFollowUps.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    return handleResponse(res, 200, "Follow-ups fetched successfully", {
+      results: myFollowUps,
+    });
+  } catch (err) {
+    console.error("Error in getMyFollowUps:", err.message);
+    return handleResponse(res, 500, "Server error", { error: err.message });
   }
 };
 
@@ -1406,7 +1444,7 @@ const addNotes = async (req, res) => {
         name: user.username,
         role: user.user_role,
       },
-      created_at: new Date(),
+      createdAt: new Date(),
     };
 
     // ✅ Find or create Note doc for this customer
@@ -1444,7 +1482,7 @@ const getCustomerNotes = async (req, res) => {
     const formatted = noteDoc.notes.map((n) => ({
       message: n.message,
       added_by: n.added_by,
-      created_at: n.created_at,
+      createdAt: n.createdAt,
     }));
 
     return handleResponse(res, 200, "Notes fetched successfully", {
@@ -1457,12 +1495,15 @@ const getCustomerNotes = async (req, res) => {
   }
 };
 
-
 const getCustomerDetailsByUserId = async (req, res) => {
   try {
     // Ensure only admin can access this route
     if (req.user.role !== "admin") {
-      return handleResponse(res, 403, "Access denied. Only admins can view user customers.");
+      return handleResponse(
+        res,
+        403,
+        "Access denied. Only admins can view user customers."
+      );
     }
 
     const { userId } = req.params;
@@ -1483,18 +1524,24 @@ const getCustomerDetailsByUserId = async (req, res) => {
     } else if (user.role === "channel_partner") {
       customersQuery = { "createdBy.id": userId };
     } else {
-      return handleResponse(res, 400, "User role not supported for this operation.");
+      return handleResponse(
+        res,
+        400,
+        "User role not supported for this operation."
+      );
     }
 
     // Fetch customers with project and company populated
     const customers = await Customer.find(customersQuery)
-      .select("full_name phone_number email project personal_phone_number company status status_history")
+      .select(
+        "full_name phone_number email project personal_phone_number company status status_history"
+      )
       .populate({ path: "project", select: "project_title" })
       .populate({ path: "company", select: "companyName" })
       .lean();
 
     // Map project and company names into the customer objects
-    const enhancedCustomers = customers.map(customer => ({
+    const enhancedCustomers = customers.map((customer) => ({
       _id: customer._id,
       full_name: customer.full_name,
       phone_number: customer.phone_number,
@@ -1514,7 +1561,6 @@ const getCustomerDetailsByUserId = async (req, res) => {
       customerCount,
       results: enhancedCustomers,
     });
-
   } catch (error) {
     console.error("Error fetching customer details by user ID:", error);
     return handleResponse(res, 500, "Internal Server Error");
@@ -1523,6 +1569,7 @@ const getCustomerDetailsByUserId = async (req, res) => {
 
 export const customers = {
   createCustomer,
+  bulkUploadCustomersCSV,
   getAllCustomers,
   getCustomersById,
   generateCustomerLink,
@@ -1535,7 +1582,8 @@ export const customers = {
   getCustomerStatusHistory,
   addFollowUp,
   getCustomerFollowUps,
+  getMyFollowUps,
   addNotes,
   getCustomerNotes,
-  getCustomerDetailsByUserId
+  getCustomerDetailsByUserId,
 };
