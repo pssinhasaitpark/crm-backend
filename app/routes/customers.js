@@ -42,4 +42,6 @@ router.get("/:customerId/notes", verifyToken, customers.getCustomerNotes);
 
 router.get("/admin/:userId", verifyToken, customers.getCustomerDetailsByUserId);
 
+router.get("/status-history/:customerId", customers.getStatusHistoryByCustomerID);
+
 export default router;

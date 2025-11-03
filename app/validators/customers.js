@@ -104,3 +104,37 @@ export const agentCustomerValidator = customerValidators.fork(
   ["personal_phone_number", "company"],
   (schema) => schema.optional()
 );
+
+/*
+export const customerUploadValidator = Joi.object({
+  full_name: Joi.string().required().messages({
+    "any.required": "Full name is required",
+  }),
+  phone_number: Joi.string().pattern(/^[0-9]{10}$/).required().messages({
+    "string.pattern.base": "Phone number must be 10 digits",
+    "any.required": "Phone number is required",
+  }),
+  email: Joi.string().email().required().messages({
+    "string.email": "Invalid email format",
+    "any.required": "Email is required",
+  }),
+  personal_phone_number: Joi.string().pattern(/^[0-9]{10}$/).optional().messages({
+    "string.pattern.base": "Personal phone number must be 10 digits",
+  }),
+  project: Joi.string()
+    .pattern(/^P-\d{3,}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Project ID must start with 'P-' followed by numbers (e.g., P-101)",
+      "any.required": "Project ID is required",
+    }),
+  company: Joi.string()
+    .pattern(/^C-\d{3,}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Company ID must start with 'C-' followed by numbers (e.g., C-101)",
+      "any.required": "Company ID is required",
+    }),
+});
+*/
+
