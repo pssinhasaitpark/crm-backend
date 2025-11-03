@@ -13,7 +13,7 @@ const followUpItemSchema = new mongoose.Schema(
       name: String,
       role: String,
     },
-    created_at: { type: Date, default: Date.now },
+    createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
 );

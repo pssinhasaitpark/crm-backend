@@ -165,7 +165,7 @@ const updateUserStatusById = async (req, res) => {
         req.io.to(socketId).emit("force-logout", {
           title: "Account Deactivated",
           message:
-            "🔴 Your account has been set to Inactive by the Admin. Please contact the Admin to reactivate it.",
+            "🔴 Your account has been set to Inactive by the Admin. Please contact the Admin to Re Activate it.",
           type: "warning",
         });
 

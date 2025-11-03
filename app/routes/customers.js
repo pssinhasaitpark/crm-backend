@@ -2,8 +2,11 @@
 import express from "express";
 import { customers } from "../controllers/customers.js";
 import { verifyToken } from "../middlewares/jwtAuth.js"
+import { uploadCSV } from "../middlewares/multer.js";
 
 const router = express.Router();
+
+router.get("/my-follow-ups", verifyToken, customers.getMyFollowUps);
 
 router.get("/history/:id", verifyToken, customers.getCustomerStatusHistory);
 
@@ -12,6 +15,8 @@ router.get("/broadcasted", verifyToken, customers.getAllBroadcastedCustomers);
 router.get("/generate-customer-link", verifyToken, customers.generateCustomerLink);
 
 router.post("/create", verifyToken, customers.createCustomer);
+
+router.post("/bulk-upload/csv", verifyToken, uploadCSV, customers.bulkUploadCustomersCSV);
 
 router.get("/all", verifyToken, customers.getAllCustomers);
 
