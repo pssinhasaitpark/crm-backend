@@ -166,6 +166,7 @@ const createCustomer = async (req, res) => {
   }
 };
 
+// mongoose id of company and project
 const bulkUploadCustomersCSV = async (req, res) => {
   try {
     const user = req.user;
@@ -1567,6 +1568,37 @@ const getCustomerDetailsByUserId = async (req, res) => {
   }
 };
 
+const getStatusHistoryByCustomerID = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+
+    // Find customer and select status_history field
+    const customer = await Customer.findById(customerId).select("full_name status_history");
+
+    if (!customer) {
+      return res.status(404).json({ message: "Customer not found" });
+    }
+
+    // Sort status history by updated_at (ascending)
+    const sortedHistory = customer.status_history.sort(
+      (a, b) => new Date(a.updated_at) - new Date(b.updated_at)
+    );
+
+    res.status(200).json({
+      customer_id: customer._id,
+      customer_name: customer.full_name,
+      total_records: sortedHistory.length,
+      status_history: sortedHistory,
+    });
+  } catch (error) {
+    console.error("Error fetching status history:", error);
+    res.status(500).json({
+      message: "Server error while fetching status history",
+      error: error.message,
+    });
+  }
+};
+
 export const customers = {
   createCustomer,
   bulkUploadCustomersCSV,
@@ -1586,4 +1618,5 @@ export const customers = {
   addNotes,
   getCustomerNotes,
   getCustomerDetailsByUserId,
+  getStatusHistoryByCustomerID
 };
