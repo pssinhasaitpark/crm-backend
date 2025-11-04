@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import CustomerLink from "../models/customerLink.js";
 import Customer from "../models/customers.js";
 import User from "../models/users/user.js";
+import Admins from "../models/admin.js";
 import Customers from "../models/customers.js";
 import Project from "../models/projects.js";
 import mongoose from "mongoose";
@@ -21,6 +22,144 @@ import { Readable } from "node:stream";
 dayjs.extend(utc);
 dayjs.extend(customParseFormat);
 
+// Using projectID and companyID
+const createCustomer = async (req, res) => {
+  try {
+    const user = req.user; // logged-in user
+    // ✅ Role check
+    if (!["agent", "channel_partner", "admin"].includes(user.role)) {
+      return handleResponse(
+        res,
+        403,
+        "Access Denied. Only Agents, Channel Partners, or Admins can create customers."
+      );
+    }
+    // ✅ Choose validator dynamically
+    const validator =
+      user.role === "agent" ? agentCustomerValidator : customerValidators;
+    const { error } = validator.validate(req.body, { abortEarly: false });
+    if (error) {
+      const messages = error.details.map((err) =>
+        err.message.replace(/["\\]/g, "")
+      );
+      return handleResponse(res, 400, messages.join(", "));
+    }
+    const {
+      full_name,
+      phone_number,
+      email,
+      personal_phone_number,
+      project: projectID, // Accept projectID (e.g., P-101)
+      company: companyID, // Accept companyID (e.g., C-101)
+    } = req.body;
+
+    // ✅ Resolve projectID to MongoDB _id
+    const projectDoc = await Project.findOne({ projectID });
+    if (!projectDoc) return handleResponse(res, 404, "Project not found.");
+
+    // ✅ Resolve companyID to MongoDB _id (if provided)
+    let assignedCompany;
+    if (user.role === "channel_partner" || user.role === "admin") {
+      if (!companyID)
+        return handleResponse(
+          res,
+          400,
+          "Company ID is required for Admins/Partners."
+        );
+      const companyDoc = await Company.findOne({ companyID });
+      if (!companyDoc) return handleResponse(res, 404, "Company not found.");
+      assignedCompany = companyDoc._id;
+    } else {
+      assignedCompany = user.company; // agent's company from token
+    }
+
+    // ✅ Check duplicates
+    const existingPhone = await Customers.findOne({ phone_number });
+    if (existingPhone)
+      return handleResponse(res, 409, "Phone number already registered.");
+    const existingEmail = await Customers.findOne({ email });
+    if (existingEmail)
+      return handleResponse(res, 409, "Email already registered.");
+
+    // ✅ Base lead data
+    let isBroadcasted = true;
+    let broadcastedAgents = [];
+    let isAccepted = false;
+    let acceptedBy = null;
+
+    // ✅ Agent personal customer logic
+    if (user.role === "agent") {
+      isBroadcasted = false;
+      broadcastedAgents = [user.id];
+      isAccepted = true;
+      acceptedBy = user.id;
+    } else {
+      // ✅ For Admins / Channel Partners: find active agents for broadcast
+      const agents = await User.find({
+        company: assignedCompany,
+        role: "agent",
+        status: "active",
+      }).select("_id full_name email");
+      broadcastedAgents = agents.map((a) => a._id);
+    }
+
+    // ✅ Create customer record
+    const newCustomer = await Customers.create({
+      full_name,
+      phone_number,
+      email,
+      personal_phone_number:
+        user.role === "agent" ? null : personal_phone_number,
+      project: projectDoc._id, // Use resolved MongoDB _id
+      company: assignedCompany, // Use resolved MongoDB _id
+      status: "New",
+      isAccepted,
+      createdBy: {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+      },
+      acceptedBy,
+      is_broadcasted: isBroadcasted,
+      broadcasted_to: broadcastedAgents,
+    });
+
+    const responseData = newCustomer.toObject();
+    delete responseData.createdBy;
+
+    // ✅ Emit socket only for admin / channel partner
+    if (user.role !== "agent") {
+      req.io.to(assignedCompany.toString()).emit("customer-created", {
+        customer: responseData,
+        message: `📢 New customer created by ${user.full_name}`,
+      });
+      console.log("\n============================");
+      console.log(
+        `📢 Broadcasting new customer to Company [${assignedCompany}]`
+      );
+      console.log(`👤 Created by: ${user.name} (${user.role})`);
+      console.log(`👥 Broadcasted to: ${broadcastedAgents.length} agents`);
+      console.log("============================\n");
+    } else {
+      console.log(
+        `✅ Personal customer created by Agent: ${user.name} (${user.id})`
+      );
+    }
+
+    return handleResponse(
+      res,
+      201,
+      "Customer created successfully",
+      responseData
+    );
+  } catch (error) {
+    console.error("❌ Error Creating Customer:", error);
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+/*
+// mongoose id of company and project
 const createCustomer = async (req, res) => {
   try {
     const user = req.user; // logged-in user
@@ -56,11 +195,11 @@ const createCustomer = async (req, res) => {
     } = req.body;
 
     // ✅ Check duplicates
-    const existingPhone = await Customer.findOne({ phone_number });
+    const existingPhone = await Customers.findOne({ phone_number });
     if (existingPhone)
       return handleResponse(res, 409, "Phone number already registered.");
 
-    const existingEmail = await Customer.findOne({ email });
+    const existingEmail = await Customers.findOne({ email });
     if (existingEmail)
       return handleResponse(res, 409, "Email already registered.");
 
@@ -111,7 +250,7 @@ const createCustomer = async (req, res) => {
     }
 
     // ✅ Create customer record
-    const newCustomer = await Customer.create({
+    const newCustomer = await Customers.create({
       full_name,
       phone_number,
       email,
@@ -273,7 +412,7 @@ const bulkUploadCustomersCSV = async (req, res) => {
       }
 
       // ✅ 3️⃣ Duplicate check
-      const existing = await Customer.findOne({
+      const existing = await Customers.findOne({
         $or: [{ phone_number: data.phone_number }, { email: data.email }],
       });
 
@@ -324,7 +463,7 @@ const bulkUploadCustomersCSV = async (req, res) => {
     }
 
     // ✅ Insert only if ALL valid
-    const inserted = await Customer.insertMany(validRecords, {
+    const inserted = await Customers.insertMany(validRecords, {
       ordered: false,
     });
 
@@ -346,27 +485,176 @@ const bulkUploadCustomersCSV = async (req, res) => {
     });
   }
 };
+*/
+
+// Using projectID and companyID
+const bulkUploadCustomersCSV = async (req, res) => {
+  try {
+    const user = req.user;
+    // 🔒 Allow only admins
+    if (user.role !== "admin") {
+      return handleResponse(res, 403, "Only admins can bulk upload customers.");
+    }
+    // 🧾 Validate uploaded file
+    if (!req.file || !req.file.buffer) {
+      return handleResponse(res, 400, "CSV file is required.");
+    }
+    const buffer = req.file.buffer;
+    if (buffer.length === 0) {
+      return handleResponse(res, 400, "Uploaded file is empty or invalid.");
+    }
+    // 🧩 Convert buffer → readable stream
+    const readable = Readable.from(buffer);
+    readable.setEncoding("utf-8");
+    const csvData = [];
+    await new Promise((resolve, reject) => {
+      readable
+        .pipe(csv())
+        .on("data", (row) => csvData.push(row))
+        .on("end", resolve)
+        .on("error", reject);
+    });
+    if (csvData.length === 0) {
+      return handleResponse(res, 400, "CSV file is empty or invalid.");
+    }
+    // 🗂️ Collect unique projectIDs and companyIDs
+    const allProjectIDs = [
+      ...new Set(csvData.map((r) => r.project?.trim()).filter(Boolean)),
+    ];
+    const allCompanyIDs = [
+      ...new Set(csvData.map((r) => r.company?.trim()).filter(Boolean)),
+    ];
+    // ✅ Fetch existing Project and Company by their IDs (P-101, C-101)
+    const existingProjects = await Project.find({
+      projectID: { $in: allProjectIDs },
+    }).select("_id projectID");
+    const existingCompanies = await Company.find({
+      companyID: { $in: allCompanyIDs },
+    }).select("_id companyID");
+    // Create mapping from projectID → _id and companyID → _id
+    const projectIDToMongoID = existingProjects.reduce((acc, p) => {
+      acc[p.projectID] = p._id;
+      return acc;
+    }, {});
+    const companyIDToMongoID = existingCompanies.reduce((acc, c) => {
+      acc[c.companyID] = c._id;
+      return acc;
+    }, {});
+    const validRecords = [];
+    const invalidRecords = [];
+    // 🧠 Validate each CSV row
+    for (let i = 0; i < csvData.length; i++) {
+      const row = csvData[i];
+      const data = {
+        full_name: row.full_name?.trim(),
+        phone_number: row.phone_number?.trim(),
+        email: row.email?.trim(),
+        personal_phone_number: row.personal_phone_number?.trim(),
+        project: row.project?.trim(),
+        company: row.company?.trim(),
+      };
+      // ✅ 1️⃣ Joi validation
+      const { error } = customerValidators.validate(data, {
+        abortEarly: false,
+      });
+      if (error) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: error.details.map((e) => e.message.replace(/["\\]/g, "")),
+        });
+        continue;
+      }
+      // ✅ 2️⃣ Project / Company existence check
+      if (data.project && !projectIDToMongoID[data.project]) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: [`Invalid or non-existing Project ID: ${data.project}`],
+        });
+        continue;
+      }
+      if (data.company && !companyIDToMongoID[data.company]) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: [`Invalid or non-existing Company ID: ${data.company}`],
+        });
+        continue;
+      }
+      // ✅ 3️⃣ Duplicate check
+      const existing = await Customers.findOne({
+        $or: [{ phone_number: data.phone_number }, { email: data.email }],
+      });
+      if (existing) {
+        invalidRecords.push({
+          row: i + 1,
+          errors: ["Customer with same phone or email already exists"],
+        });
+        continue;
+      }
+      // ✅ All good: map projectID and companyID to _id
+      const record = {
+        ...data,
+        project: projectIDToMongoID[data.project],
+        company: companyIDToMongoID[data.company],
+        status: "New",
+        isAccepted: false,
+        is_broadcasted: true,
+        createdBy: {
+          id: user.id,
+          name: user.name,
+          role: user.role,
+        },
+      };
+      validRecords.push(record);
+    }
+    // ❌ Abort if ANY invalid rows found
+    if (invalidRecords.length > 0) {
+      const uniqueErrors = [
+        ...new Set(invalidRecords.flatMap((r) => r.errors)),
+      ];
+      let message = "";
+      if (uniqueErrors.length === 1) {
+        message = `Some rows failed due to: ${uniqueErrors[0]}`;
+      } else {
+        message = `Some rows failed due to multiple issues: ${uniqueErrors.join(
+          ", "
+        )}`;
+      }
+      message += ` (${invalidRecords.length} rows failed)`;
+      return handleResponse(res, 400, message, {
+        failed_count: invalidRecords.length,
+        failed_records: invalidRecords,
+      });
+    }
+    // ✅ Insert only if ALL valid
+    const inserted = await Customers.insertMany(validRecords, {
+      ordered: false,
+    });
+    // 📢 Emit socket event
+    if (user.company) {
+      req.io.to(user.company.toString()).emit("bulk-customers-created", {
+        count: inserted.length,
+        message: `📢 ${inserted.length} new customers uploaded by Admin ${user.full_name}`,
+      });
+    }
+    return handleResponse(res, 201, "Bulk upload completed", {
+      success_count: inserted.length,
+    });
+  } catch (error) {
+    console.error("Bulk Upload Error:", error);
+    return handleResponse(res, 500, "Internal Server Error", {
+      error: error.message,
+    });
+  }
+};
 
 const getAllCustomers = async (req, res) => {
   try {
     const user = req.user;
     let query = {};
-
     const { q = "", page = 1 } = req.query;
 
-    console.log(
-      "\n📋 Fetching customers for:",
-      user.role,
-      "-",
-      user.full_name || user.name || user._id
-    );
-
-    // 👑 ADMIN — all customers
-    if (user.role === "admin") {
-      query = {};
-    }
-
-    // 🧑‍💼 CHANNEL PARTNER — customers created by them
+    // --- Role-based filters (your existing logic)
+    if (user.role === "admin") query = {};
     else if (user.role === "channel_partner") {
       query = {
         $or: [
@@ -374,27 +662,19 @@ const getAllCustomers = async (req, res) => {
           { "createdBy.id": user.id?.toString() },
         ],
       };
-    }
-
-    // 🧍 AGENT — accepted customers
-    else if (user.role === "agent") {
+    } else if (user.role === "agent") {
       query = {
         acceptedBy: user._id?.toString() || user.id?.toString(),
         isAccepted: true,
       };
-    }
-
-    // 🚫 INVALID ROLE
-    else {
-      console.log("🚫 Unauthorized role:", user.role);
+    } else {
       return handleResponse(res, 403, "Access Denied.");
     }
 
-    // 🔎 Searching (case-insensitive)
+    // --- Searching
     if (q) {
       const regex = new RegExp(q, "i");
       const isValidObjectId = mongoose.Types.ObjectId.isValid(q);
-
       query.$or = [
         { full_name: regex },
         { email: regex },
@@ -402,41 +682,50 @@ const getAllCustomers = async (req, res) => {
         { personal_phone_number: regex },
         { status: regex },
       ];
-
-      if (isValidObjectId) {
-        query.$or.push({ _id: new mongoose.Types.ObjectId(String(q)) });
-      }
+      if (isValidObjectId) query.$or.push({ _id: new mongoose.Types.ObjectId(String(q)) });
     }
 
-    console.log("🔍 Final Query Used:", JSON.stringify(query, null, 2));
-
-    // 🧮 Pagination
-    // const skip = (Number(page) - 1) * Number(perPage);
-
-    // 🚀 Fetch customers with populated project + company
+    // --- Fetch customers
     const customers = await Customers.find(query)
-      .populate("project", "project_title") // ✅ correct field name
-      .populate("company", "companyName") // ✅ correct field name
+      .populate("project", "project_title")
+      .populate("company", "companyName")
       .populate("acceptedBy", "full_name")
       .sort({ createdAt: -1 })
-      // .skip(skip)
-      // .limit(Number(perPage))
       .lean();
 
     const totalItems = await Customers.countDocuments(query);
-    // const totalPages = Math.ceil(totalItems / Number(perPage));
 
     if (!customers.length) {
       return handleResponse(res, 200, "No customers found.", {
         results: [],
         totalItems,
-        currentPage: Number(page),
-        totalPages,
-        totalItemsOnCurrentPage: 0,
       });
     }
 
-    // 🧠 Attach projectName + companyName
+    // 🔍 Collect all unique user/admin IDs from status_history
+    const userIds = new Set();
+    const adminIds = new Set();
+
+    customers.forEach((cust) => {
+      cust.status_history?.forEach((h) => {
+        if (h.id) {
+          if (h.role === "admin") adminIds.add(h.id.toString());
+          else userIds.add(h.id.toString());
+        }
+      });
+    });
+
+    // 🔎 Fetch names from both collections
+    const [users, admins] = await Promise.all([
+      User.find({ _id: { $in: Array.from(userIds) } }, { full_name: 1 }).lean(),
+      Admins.find({ _id: { $in: Array.from(adminIds) } }, { name: 1 }).lean(),
+    ]);
+
+    // 🧭 Create quick lookup maps
+    const userMap = Object.fromEntries(users.map((u) => [u._id.toString(), u.full_name]));
+    const adminMap = Object.fromEntries(admins.map((a) => [a._id.toString(), a.name]));
+
+    // 🧩 Format customers
     const formattedCustomers = customers.map((cust) => ({
       ...cust,
       projectName: cust.project?.project_title || null,
@@ -445,19 +734,19 @@ const getAllCustomers = async (req, res) => {
       company: cust.company?._id || cust.company,
       acceptedByName: cust.acceptedBy?.full_name || null,
       acceptedBy: cust.acceptedBy?._id || cust.acceptedBy,
+
+      status_history: cust.status_history?.map((h) => ({
+        ...h,
+        name:
+          h.role === "admin"
+            ? adminMap[h.id?.toString()] || null
+            : userMap[h.id?.toString()] || null,
+      })),
     }));
 
-    // 🧮 Count accepted customers
-    const acceptedCount = formattedCustomers.filter((c) => c.isAccepted).length;
-
-    // ✅ Final response
     return handleResponse(res, 200, "Customers fetched successfully", {
       results: formattedCustomers,
       totalItems,
-      // currentPage: Number(page),
-      // totalPages,
-      // totalItemsOnCurrentPage: formattedCustomers.length,
-      // acceptedCount,
     });
   } catch (error) {
     console.error("❌ Error Fetching Customers:", error);
@@ -537,6 +826,120 @@ const generateCustomerLink = async (req, res) => {
   }
 };
 
+// Using projectID and companyID
+const createCustomerFromLink = async (req, res) => {
+  try {
+    const { code } = req.params;
+
+    // 1️⃣ Validate link
+    const link = await CustomerLink.findOne({ code });
+    if (!link)
+      return handleResponse(res, 400, "Invalid or expired customer link");
+
+    // 2️⃣ Find the creator (Channel Partner / Agent)
+    const creator = await User.findById(link.createdBy.id);
+    if (!creator) return handleResponse(res, 404, "Creator not found");
+
+    // 3️⃣ Validate customer fields
+    const {
+      full_name,
+      email,
+      phone_number,
+      personal_phone_number,
+      project: projectID,
+    } = req.body;
+
+    if (
+      !full_name ||
+      !email ||
+      !phone_number ||
+      !personal_phone_number ||
+      !projectID
+    )
+      return handleResponse(res, 400, "Missing required fields");
+
+    // ✅ Resolve projectID to MongoDB _id
+    const projectDoc = await Project.findOne({ projectID });
+    if (!projectDoc) return handleResponse(res, 404, "Project not found");
+
+    // 4️⃣ Create new customer
+    const customer = await Customers.create({
+      full_name,
+      email,
+      phone_number,
+      personal_phone_number,
+      project: projectDoc._id,
+      createdBy: {
+        id: creator._id,
+        name: creator.full_name,
+        role: creator.role,
+      },
+      company: creator.company,
+    });
+
+    // 5️⃣ Delete link (one-time use)
+    await CustomerLink.deleteOne({ code });
+
+    // 6️⃣ Broadcast via socket
+    if (req.io && creator.company) {
+      const companyId = creator.company.toString();
+      console.log("============================");
+      console.log(`📢 Broadcasting new customer to Company [${companyId}]`);
+      console.log(`👤 Created by: ${creator.full_name} (${creator.role})`);
+
+      const socketsInRoom = req.io.sockets.adapter.rooms.get(companyId);
+      console.log(
+        "👥 Agents receiving broadcast:",
+        socketsInRoom ? socketsInRoom.size : 0
+      );
+
+      req.io.to(companyId).emit("customer-created", {
+        message: "New customer created",
+        customer,
+        createdBy: {
+          id: creator._id,
+          name: creator.full_name,
+          role: creator.role,
+        },
+      });
+      console.log("============================");
+    }
+
+    // 7️⃣ Respond to frontend
+    return handleResponse(
+      res,
+      201,
+      "Customer created successfully",
+      customer.toObject()
+    );
+  } catch (error) {
+    console.error("❌ Error creating customer:", error);
+
+    // ✅ Handle duplicate key errors gracefully
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0];
+      const value = error.keyValue ? error.keyValue[field] : null;
+      const message = value
+        ? `${field.replace("_", " ")} "${value}" is already registered.`
+        : "Duplicate record detected.";
+      return handleResponse(res, 409, message);
+    }
+
+    // ✅ Handle Mongoose validation errors
+    if (error.name === "ValidationError") {
+      const message = Object.values(error.errors)
+        .map((err) => err.message)
+        .join(", ");
+      return handleResponse(res, 400, message);
+    }
+
+    // ❌ Fallback for all other errors
+    return handleResponse(res, 500, "Internal Server Error");
+  }
+};
+
+/*
+mongoose ProjectID 
 const createCustomerFromLink = async (req, res) => {
   try {
     const { code } = req.params;
@@ -563,7 +966,7 @@ const createCustomerFromLink = async (req, res) => {
       return handleResponse(res, 400, "Missing required fields");
 
     // 4️⃣ Create new customer
-    const customer = await Customer.create({
+    const customer = await Customers.create({
       full_name,
       email,
       phone_number,
@@ -620,7 +1023,7 @@ const createCustomerFromLink = async (req, res) => {
     return handleResponse(res, 500, "Internal Server Error");
   }
 };
-
+*/
 const getCustomerStats = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -653,7 +1056,7 @@ const getCustomerStats = async (req, res) => {
         return handleResponse(res, 403, "Access Denied");
       }
 
-      const customers = await Customer.find(query)
+      const customers = await Customers.find(query)
         .sort({ createdAt: -1 })
         .lean();
 
@@ -727,10 +1130,10 @@ const getCustomerStats = async (req, res) => {
     let stats = {};
 
     if (user.role === "channel_partner") {
-      const totalCustomers = await Customer.countDocuments({
+      const totalCustomers = await Customers.countDocuments({
         "createdBy.id": user._id,
       });
-      const statusCounts = await Customer.aggregate([
+      const statusCounts = await Customers.aggregate([
         { $match: { "createdBy.id": user._id } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]);
@@ -739,11 +1142,11 @@ const getCustomerStats = async (req, res) => {
       );
       stats = { total: totalCustomers, statusCounts: statusMap };
     } else if (user.role === "agent") {
-      const totalCustomers = await Customer.countDocuments({
+      const totalCustomers = await Customers.countDocuments({
         acceptedBy: user._id,
         isAccepted: true,
       });
-      const statusCounts = await Customer.aggregate([
+      const statusCounts = await Customers.aggregate([
         { $match: { acceptedBy: user._id, isAccepted: true } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]);
@@ -779,7 +1182,7 @@ const acceptCustomer = async (req, res) => {
     console.log(`🧾 Customer ID: ${customerId}`);
 
     // 1️⃣ Find Customer
-    const customer = await Customer.findById(customerId).populate(
+    const customer = await Customers.findById(customerId).populate(
       "createdBy.id"
     );
     if (!customer) return handleResponse(res, 404, "Customer not found");
@@ -914,7 +1317,7 @@ const declineCustomer = async (req, res) => {
       return handleResponse(res, 403, "Only agents can decline customers");
     }
 
-    const customer = await Customer.findById(customerId).populate(
+    const customer = await Customers.findById(customerId).populate(
       "company",
       "name"
     );
@@ -1083,8 +1486,8 @@ const getAllBroadcastedCustomers = async (req, res) => {
     const countPipeline = [{ $match: matchStage }, { $count: "totalItems" }];
 
     const [customers, countResult] = await Promise.all([
-      Customer.aggregate(pipeline),
-      Customer.aggregate(countPipeline),
+      Customers.aggregate(pipeline),
+      Customers.aggregate(countPipeline),
     ]);
 
     const totalItems = countResult[0]?.totalItems || 0;
@@ -1131,7 +1534,7 @@ const updateCustomerStatus = async (req, res) => {
       return handleResponse(res, 400, "Invalid Status ID");
     }
 
-    const customer = await Customer.findById(id);
+    const customer = await Customers.findById(id);
     if (!customer) {
       return handleResponse(res, 404, "Customer not found");
     }
@@ -1235,7 +1638,7 @@ const getCustomerStatusHistory = async (req, res) => {
       return handleResponse(res, 400, "Invalid Customer ID");
     }
 
-    const customer = await Customer.findById(
+    const customer = await Customers.findById(
       id,
       "status status_history createdAt createdBy"
     ).lean();
@@ -1302,7 +1705,7 @@ const addFollowUp = async (req, res) => {
     const { task, notes, follow_up_date, call_status } = req.body;
 
     // ✅ Verify customer exists
-    const customer = await Customer.findById(customerId);
+    const customer = await Customers.findById(customerId);
     if (!customer) return handleResponse(res, 404, "Customer not found");
 
     // ✅ Prepare follow-up data
@@ -1434,7 +1837,7 @@ const addNotes = async (req, res) => {
     const { message } = req.body;
 
     // ✅ Verify customer
-    const customer = await Customer.findById(customerId);
+    const customer = await Customers.findById(customerId);
     if (!customer) return handleResponse(res, 404, "Customer not found");
 
     // ✅ Note data
@@ -1533,7 +1936,7 @@ const getCustomerDetailsByUserId = async (req, res) => {
     }
 
     // Fetch customers with project and company populated
-    const customers = await Customer.find(customersQuery)
+    const customers = await Customers.find(customersQuery)
       .select(
         "full_name phone_number email project personal_phone_number company status status_history"
       )
@@ -1573,7 +1976,7 @@ const getStatusHistoryByCustomerID = async (req, res) => {
     const { customerId } = req.params;
 
     // Find customer and select status_history field
-    const customer = await Customer.findById(customerId).select("full_name status_history");
+    const customer = await Customers.findById(customerId).select("full_name status_history");
 
     if (!customer) {
       return res.status(404).json({ message: "Customer not found" });
